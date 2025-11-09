@@ -226,3 +226,6 @@ WARNING: Nan, Inf or huge value in QVEL at DOF 0. The simulation is unstable. Ti
 Fri Oct 24 13:19:56 2025
 WARNING: Nan, Inf or huge value in QPOS at DOF 0. The simulation is unstable. Time = 14.4500.
 
+Sun Nov  9 15:50:34 2025
+ERROR: could not initialize GLFW
+
