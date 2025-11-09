@@ -1,1 +1,0 @@
-timestamp,pos_x,pos_y,pos_z,target_x,target_y,target_z,roll,pitch,yaw,vel_x,vel_y,vel_z,angular_vel_x,angular_vel_y,angular_vel_z,accel_x,accel_y,accel_z,f_world_x,f_world_y,f_world_z,f_body_x,f_body_y,f_body_z,tau_x,tau_y,tau_z,u1,u2,u3,u4,u5,T12,T34,T5,alpha1,alpha2theta1,theta2
