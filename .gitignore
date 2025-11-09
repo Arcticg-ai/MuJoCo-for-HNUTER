@@ -32,3 +32,6 @@
 *.app
 logs/*.csv
 logs/
+logs/
+*.csv
+*.log
