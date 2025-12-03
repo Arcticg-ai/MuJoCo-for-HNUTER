@@ -148,13 +148,17 @@ class HnuterController:
         F2 = np.clip(F2, 0, T_max)
         F3 = np.clip(F3, -10, 10)
         
-        # 角度限制（±85度）
-        alpha_max = np.radians(90)
+        # 角度限制（±90度）
+        alpha_max = np.radians(180)
         alpha1 = np.clip(alpha1, -alpha_max, alpha_max)
         alpha2 = np.clip(alpha2, -alpha_max, alpha_max)
-        theta_max = np.radians(90)
+        theta_max = np.radians(180)
         theta1 = np.clip(theta1, -theta_max, theta_max)
         theta2 = np.clip(theta2, -theta_max, theta_max)
+        # alpha1 = np.radians(alpha1)
+        # alpha2 = np.radians(alpha2)
+        # theta1 = np.radians(theta1)
+        # theta2 = np.radians(theta2)
         
         # 更新状态
         self.T12 = F1
@@ -272,20 +276,20 @@ def test_force_to_actuators():
     # 测试用例3: 滚转运动
     print("\n测试用例3: 滚转运动")
     f_c_body = np.array([0.0, 0.0, 0.0])
-    tau_c = np.array([1.0, 0.0, 0.0])  # 滚转力矩
+    tau_c = np.array([0.9, 0.0, 0.0])  # 滚转力矩
     controller.update_control(f_c_body, tau_c)
     controller.print_status()
     
     # 测试用例4: 偏航运动
     print("\n测试用例4: 偏航运动")
-    f_c_body = np.array([0.0, 0.0, 0.0])
+    f_c_body = np.array([0.0, 0.0, 2.0])
     tau_c = np.array([0.0, 0.0, 0.5])  # 偏航力矩
     controller.update_control(f_c_body, tau_c)
     controller.print_status()
 
     # 测试用例5: 俯仰运动
     print("\n测试用例5: 俯仰运动")
-    f_c_body = np.array([0.0, 0.0, 0.0])
+    f_c_body = np.array([0.0, 0.0, 2.0])
     tau_c = np.array([0.0, 0.5, 0.0])  # 偏航力矩
     controller.update_control(f_c_body, tau_c)
     controller.print_status()

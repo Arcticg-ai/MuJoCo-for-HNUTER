@@ -453,11 +453,11 @@ class HnuterController:
         """
         # 步骤1：计算u中与t无关的分量（u1, u2, u4, u5, u7）
         # 使用与hnuter31demo.py兼容的计算方式
-        u7 = (5/3) * W[4]                     # 由俯仰力矩确定尾部推进器力
-        u1 = W[0]/2 - (5/4)*W[5]              # 由X力和偏航力矩确定
-        u4 = W[0]/2 + (5/4)*W[5]              # 由X力和偏航力矩确定
-        u2 = (W[2] - (5/3)*W[4])/2 + (5/4)*W[3]  # 由Z力、俯仰力矩和滚转力矩确定
-        u5 = (W[2] - (5/3)*W[4])/2 - (5/4)*W[3]  # 由Z力、俯仰力矩和滚转力矩确定
+        u7 = (2/1) * W[4]                     # 由俯仰力矩确定尾部推进器力
+        u1 = W[0]/2 - (5/2)*W[5]              # 由X力和偏航力矩确定
+        u4 = W[0]/2 + (5/2)*W[5]              # 由X力和偏航力矩确定
+        u2 = (W[2] - (2/1)*W[4])/2 + (5/2)*W[3]  # 由Z力、俯仰力矩和滚转力矩确定
+        u5 = (W[2] - (2/1)*W[4])/2 - (5/2)*W[3]  # 由Z力、俯仰力矩和滚转力矩确定
 
         # 步骤2：利用alpha1 = alpha2约束求解u3 = t
         C1 = u1**2 + u2**2  # F1² = C1 + t²（不含t的常数项）
@@ -521,7 +521,7 @@ class HnuterController:
         # F2, theta2, alpha2
         F2 = np.sqrt(C2 + u6**2)
         alpha2 = np.arctan2(u4, u5)  # 角度范围[-π, π]
-        theta2 = np.arcsin(u3 / F1)   # theta1 = theta2
+        theta2 = np.arcsin(u6 / F2)   # theta1 = theta2
 
         # 组合输出
         uu = np.array([F1, F2, F3, alpha1, alpha2, theta1, theta2])
@@ -533,7 +533,7 @@ class HnuterController:
         # W = [Fx, Fy, Fz, τx, τy, τz]
         W = np.array([
             f_c_body[0],    # X力
-            f_c_body[1],    # Y力（通常为0，但保留）
+            f_c_body[1],    # Y力
             f_c_body[2],    # Z力
             tau_c[0],       # 滚转力矩
             tau_c[1],       # 俯仰力矩
@@ -609,11 +609,11 @@ class HnuterController:
             # 设置机臂偏航角度 (alpha)
             if 'arm_pitch_right' in self.actuator_ids:
                 arm_pitch_right_id = self.actuator_ids['arm_pitch_right']
-                self.data.ctrl[arm_pitch_right_id] = alpha1
+                self.data.ctrl[arm_pitch_right_id] = alpha2
             
             if 'arm_pitch_left' in self.actuator_ids:
                 arm_pitch_left_id = self.actuator_ids['arm_pitch_left']
-                self.data.ctrl[arm_pitch_left_id] = alpha2
+                self.data.ctrl[arm_pitch_left_id] = alpha1
             
             # 设置螺旋桨倾转角度 (theta)
             if 'prop_tilt_right' in self.actuator_ids:
@@ -668,6 +668,7 @@ class HnuterController:
             
             # 应用控制
             self.set_actuators(T12, T34, T5, alpha1, alpha2, theta1, theta2)
+            # self.set_actuators(T12, T12, T5, 0, 0, 0, 0)
             
             # 记录状态
             self.log_status(state)
@@ -728,10 +729,10 @@ def main():
         controller = HnuterController("hnuter201.xml")
         
         # 设置目标轨迹（简单悬停）
-        controller.target_position = np.array([1.0, 0.0, 1.5])  # 目标高度1.5米
+        controller.target_position = np.array([0.0, 0.0, 1.5])  # 目标高度1.5米
         controller.target_velocity = np.zeros(3)
         controller.target_acceleration = np.zeros(3)
-        controller.target_attitude = np.array([0.0, -0.6, 0.0])  # 水平姿态
+        controller.target_attitude = np.array([0.0, 0.0, 0.0])  # 水平姿态
         controller.target_attitude_rate = np.zeros(3)
         controller.target_attitude_acceleration = np.zeros(3)
         

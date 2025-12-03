@@ -188,12 +188,12 @@
     <motor name="motor_rear_upper" site="motor_rear_upper" gear="0 0 1 0 0 0" forcerange="-10 10" ctrlrange="-10 10"/>
 
     <!-- 机臂偏航控制（位置伺服） -->
-    <position name="tilt_pitch_left" joint="arm_pitch_left" kp="15" kv="3" ctrllimited="true" ctrlrange="-1.57 1.57"/>
-    <position name="tilt_pitch_right" joint="arm_pitch_right" kp="15" kv="3" ctrllimited="true" ctrlrange="-1.57 1.57"/>
+    <position name="tilt_pitch_left" joint="arm_pitch_left" kp="15" kv="3" ctrllimited="true" ctrlrange="-1.7 1.7"/>
+    <position name="tilt_pitch_right" joint="arm_pitch_right" kp="15" kv="3" ctrllimited="true" ctrlrange="-1.7 1.7"/>
     
     <!-- 螺旋桨倾转控制（位置伺服） -->
-    <position name="tilt_roll_left" joint="prop_tilt_left" kp="15" kv="3" ctrllimited="true" ctrlrange="-1.57 1.57"/>
-    <position name="tilt_roll_right" joint="prop_tilt_right" kp="15" kv="3" ctrllimited="true" ctrlrange="-1.57 1.57"/>
+    <position name="tilt_roll_left" joint="prop_tilt_left" kp="15" kv="3" ctrllimited="true" ctrlrange="-1.7 1.7"/>
+    <position name="tilt_roll_right" joint="prop_tilt_right" kp="15" kv="3" ctrllimited="true" ctrlrange="-1.7 1.7"/>
   </actuator>
   
   <sensor>

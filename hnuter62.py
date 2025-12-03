@@ -379,46 +379,6 @@ class HnuterController:
             [-v[1], v[0], 0]
         ])
 
-    def compute_control_wrench(self, state: dict) -> Tuple[np.ndarray, np.ndarray]:
-        """计算控制力矩和力（基于几何控制器）"""
-        # 获取当前状态
-        position = state['position']
-        velocity = state['velocity']
-        
-        # 计算位置误差和速度误差
-        pos_error = self.target_position - position
-        vel_error = self.target_velocity - velocity
-        
-        # 计算期望加速度（考虑PD控制）
-        acc_des = self.target_acceleration + self.Kp @ pos_error + self.Dp @ vel_error
-        
-        # 计算世界坐标系下的控制力
-        f_c_world = self.mass * (acc_des + np.array([0, 0, self.gravity]))
-        
-        # 计算姿态误差（使用旋转矩阵）
-        R = state['rotation_matrix']
-        angular_velocity = state['angular_velocity']
-        R_des = self._euler_to_rotation_matrix(self.target_attitude)
-        e_R = 0.5 * self.vee_map(R_des.T @ R - R.T @ R_des)
-        
-        # 计算角速度误差
-        omega_error = angular_velocity - R.T @ R_des @ self.target_attitude_rate
-        
-        # 计算控制力矩（使用与hnuter31demo一致的PD控制方式）
-        # 简化控制律，避免复杂的矩阵操作导致索引错误
-        tau_c = -self.KR * e_R - self.Domega * omega_error
-
-
-        # 将世界坐标系下的力转换到机体坐标系
-        f_c_body = R.T @ f_c_world
-        
-        # 更新类成员变量
-        self.f_c_body = f_c_body
-        self.f_c_world = f_c_world
-        self.tau_c = tau_c
-        
-        return f_c_body, tau_c
-    
     def _euler_to_rotation_matrix(self, euler: np.ndarray) -> np.ndarray:
         """将欧拉角转换为旋转矩阵"""
         roll, pitch, yaw = euler
@@ -444,163 +404,7 @@ class HnuterController:
         
         # 组合旋转矩阵：R = R_z @ R_y @ R_x
         return R_z @ R_y @ R_x
-    
-    def inverse_nonlinear_mapping(self, W):
-        """
-        非线性逆映射函数 - 使用基于物理参数的计算
-        输入：W（6×1向量）
-        输出：uu = [F1, F2, F3, alpha1, alpha2, theta1, theta2]，其中alpha1 = alpha2
-        """
-        # 步骤1：计算u中与t无关的分量（u1, u2, u4, u5, u7）
-        # 使用与hnuter31demo.py兼容的计算方式
-        u7 = (5/3) * W[4]                     # 由俯仰力矩确定尾部推进器力
-        u1 = W[0]/2 - (5/4)*W[5]              # 由X力和偏航力矩确定
-        u4 = W[0]/2 + (5/4)*W[5]              # 由X力和偏航力矩确定
-        u2 = (W[2] - (5/3)*W[4])/2 + (5/4)*W[3]  # 由Z力、俯仰力矩和滚转力矩确定
-        u5 = (W[2] - (5/3)*W[4])/2 - (5/4)*W[3]  # 由Z力、俯仰力矩和滚转力矩确定
-
-        # 步骤2：利用alpha1 = alpha2约束求解u3 = t
-        C1 = u1**2 + u2**2  # F1² = C1 + t²（不含t的常数项）
-        C2 = u4**2 + u5**2  # F2² = C2 + (W2 + t)²（不含t的常数项，W2 = W(2)）
-        W2 = W[1]
-        
-        # 由alpha1 = alpha2推导的t的两个可能解（线性方程解）
-        sqrtC1 = np.sqrt(C1)
-        sqrtC2 = np.sqrt(C2)
-        
-        # 避免分母为0（物理意义上C1、C2通常非零，因u1,u2等不全为0）
-        if abs(sqrtC2 - sqrtC1) > 1e-10:
-            t1 = (W2 * sqrtC1) / (sqrtC2 - sqrtC1)  # 解1
-        else:
-            t1 = np.nan  # 解1无效
-        
-        t2 = (-W2 * sqrtC1) / (sqrtC2 + sqrtC1)      # 解2（分母恒正，有效）
-        
-        # 选择合理的t（优先保证F1、F2非负且角度在合理范围，此处选t2，可根据场景调整）
-        t_candidates = [t1, t2]
-        # 剔除无效解（NaN）
-        t_candidates = [t for t in t_candidates if not np.isnan(t)]
-        
-        # 验证候选t，选择使alpha1=alpha2且F1、F2非负的解
-        t_selected = None
-        for t_test in t_candidates:
-            u3_test = t_test
-            u6_test = -W2 - t_test
-            
-            F1_test = np.sqrt(C1 + u3_test**2)
-            F2_test = np.sqrt(C2 + u6_test**2)
-            
-            # 避免除以0（物理上力不为0）
-            if F1_test < 1e-10 or F2_test < 1e-10:
-                continue
-            
-            # 验证sin(theta1)是否等于sin(theta2)（考虑数值误差）
-            sin_theta1 = u3_test / F1_test
-            sin_theta2 = u6_test / F2_test
-            if abs(sin_theta1 - sin_theta2) < 1e-6:
-                t_selected = t_test
-                break
-        
-        # 若未找到有效解，默认用t2（工程上通常有效）
-        if t_selected is None:
-            t_selected = t2
-        
-        # 步骤3：确定u3和u6
-        u3 = t_selected
-        u6 = -W2 - u3
-        
-        # 步骤4：反推uu的7个参数（保证alpha1=alpha2）
-        # F3
-        F3 = u7
-        
-        # F1, theta1, alpha1
-        F1 = np.sqrt(C1 + u3**2)
-        alpha1 = np.arctan2(u1, u2)  # 角度范围[-π, π]，使用arctan2函数
-        theta1 = np.arcsin(u3 / F1)   # theta1 = theta2
-        
-        # F2, theta2, alpha2
-        F2 = np.sqrt(C2 + u6**2)
-        alpha2 = np.arctan2(u4, u5)  # 角度范围[-π, π]
-        theta2 = np.arcsin(u3 / F1)   # theta1 = theta2
-
-        # 组合输出
-        uu = np.array([F1, F2, F3, alpha1, alpha2, theta1, theta2])
-        return uu
-    
-    def allocate_actuators(self, f_c_body: np.ndarray, tau_c: np.ndarray, state: dict):
-        """分配执行器命令（使用非线性逆映射）"""
-        # 构造控制向量W（6×1向量）
-        # W = [Fx, Fy, Fz, τx, τy, τz]
-        W = np.array([
-            f_c_body[0],    # X力
-            f_c_body[1],    # Y力（通常为0，但保留）
-            f_c_body[2],    # Z力
-            tau_c[0],       # 滚转力矩
-            tau_c[1],       # 俯仰力矩
-            tau_c[2]        # 偏航力矩
-        ])
-        
-        # 使用非线性逆映射
-        uu = self.inverse_nonlinear_mapping(W)
-        
-        # 提取参数
-        F1 = uu[0]  # 前左组推力
-        F2 = uu[1]  # 前右组推力
-        F3 = uu[2]  # 尾部推进器推力
-        alpha1 = uu[3]  # roll左倾角
-        alpha2 = uu[4]  # roll右倾角
-        theta1 = uu[5]  # pitch左倾角
-        theta2 = uu[6]  # pitch右倾角
-        
-        # 推力限制
-        T_max = 50
-        F1 = np.clip(F1, 0, T_max)
-        F2 = np.clip(F2, 0, T_max)
-        F3 = np.clip(F3, -10, 10)
-        
-        # 角度限制（±85度）
-        alpha_max = np.radians(100)
-        alpha1 = np.clip(alpha1, -alpha_max, alpha_max)
-        alpha2 = np.clip(alpha2, -alpha_max, alpha_max)
-        theta_max = np.radians(100)
-        theta1 = np.clip(theta1, -theta_max, theta_max)
-        theta2 = np.clip(theta2, -theta_max, theta_max)
-        
-        # 处理角度连续性，避免跳变
-        alpha1 = self._handle_angle_continuity(alpha1, self.last_alpha1)
-        alpha2 = self._handle_angle_continuity(alpha2, self.last_alpha2)
-        theta1 = self._handle_angle_continuity(theta1, self.last_theta1)
-        theta2 = self._handle_angle_continuity(theta2, self.last_theta2)
-        
-        # 更新上一次角度
-        self.last_alpha1 = alpha1
-        self.last_alpha2 = alpha2
-        self.last_theta1 = theta1
-        self.last_theta2 = theta2
-        
-        # 更新状态
-        self.T12 = F1
-        self.T34 = F2
-        self.T5 = F3
-        self.alpha1 = alpha1  # roll右倾角
-        self.alpha2 = alpha2  # roll左倾角（与alpha1相同）
-        self.theta1 = theta1
-        self.theta2 = theta2
-        
-        # 存储控制输入向量（用于日志记录）
-        self.u = np.array([F1, F2, F3, alpha1, alpha2, theta2, theta2])
-        
-        return F1, F2, F3, alpha1, alpha2, theta1, theta2
-    
-    def _handle_angle_continuity(self, current: float, last: float) -> float:
-        """处理角度连续性，避免跳变"""
-        diff = current - last
-        if diff > np.pi:
-            return current - 2 * np.pi
-        elif diff < -np.pi:
-            return current + 2 * np.pi
-        return current
-    
+ 
     def set_actuators(self, T12: float, T34: float, T5: float, alpha1: float, alpha2: float, theta1: float, theta2: float):
         """应用控制命令到执行器 - 与hnuter31demo兼容"""
         try:
@@ -661,13 +465,12 @@ class HnuterController:
             state = self.get_state()
             
             # 计算控制力矩和力
-            f_c_body, tau_c = self.compute_control_wrench(state)
             
             # 分配执行器命令
-            T12, T34, T5, alpha1, alpha2, theta1, theta2 = self.allocate_actuators(f_c_body, tau_c, state)
             
             # 应用控制
-            self.set_actuators(T12, T34, T5, alpha1, alpha2, theta1, theta2)
+            self.set_actuators(1, 0, 0, 0.5, 0.8, 0.3, 0.6)
+            # self.set_actuators(T12, T12, T5, 0, 0, 0, 0)
             
             # 记录状态
             self.log_status(state)
@@ -700,24 +503,6 @@ class HnuterController:
         except Exception as e:
             print(f"状态打印失败: {e}")
     
-    def update_trajectory(self, time: float):
-        """更新目标轨迹"""
-        # 示例轨迹：悬停 -> 前进 -> 悬停
-        if time < 3.0:
-            # 悬停阶段
-            self.target_position = np.array([0.0, 0.0, 0.3])
-        elif time < 8.0:
-            # 前进阶段
-            forward_distance = 0.5 * (time - 3.0) / 5.0  # 5秒内前进0.5米
-            self.target_position = np.array([forward_distance, 0.0, 0.3])
-        elif time < 15.0:
-            # 后退阶段
-            backward_distance = 0.5 * (15.0 - time) / 7.0  # 7秒内后退到原点
-            self.target_position = np.array([backward_distance, 0.0, 0.3])
-        else:
-            # 最终悬停
-            self.target_position = np.array([0.0, 0.0, 0.3])
-    
 
 def main():
     """主函数 - 启动仿真"""
@@ -728,10 +513,10 @@ def main():
         controller = HnuterController("hnuter201.xml")
         
         # 设置目标轨迹（简单悬停）
-        controller.target_position = np.array([1.0, 0.0, 1.5])  # 目标高度1.5米
+        controller.target_position = np.array([0.0, 0.0, 1.5])  # 目标高度1.5米
         controller.target_velocity = np.zeros(3)
         controller.target_acceleration = np.zeros(3)
-        controller.target_attitude = np.array([0.0, -0.6, 0.0])  # 水平姿态
+        controller.target_attitude = np.array([0.0, 0.0, 0.0])  # 水平姿态
         controller.target_attitude_rate = np.zeros(3)
         controller.target_attitude_acceleration = np.zeros(3)
         
@@ -756,8 +541,6 @@ def main():
                     # 更新控制
                     controller.update_control()
                     
-                    # controller.set_actuators(0,0,0,0.0,0,0,0)
-
                     count = count + 1
                     if count % 1 == 0:
                         # 仿真步进

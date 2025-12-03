@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <mujoco>
   <compiler angle="radian" inertiafromgeom="false"/>
-  <option timestep="0.001" iterations="100" tolerance="1e-10" integrator="RK4"/>
+  <option timestep="0.01" iterations="100" tolerance="1e-10" integrator="RK4"/>
   
   <!-- 修正：将所有default定义合并到同一个顶级default块内 -->
   <default>
     <!-- 全局默认参数：所有几何体默认设置 -->
-    <geom contype="1" conaffinity="1" solimp="0.9 0.95 0.001" solref="0.02 1"/>
+    <!-- <geom contype="1" conaffinity="1" solimp="0.9 0.95 0.001" solref="0.02 1"/> -->
     <joint limited="true" damping="0.1" armature="0.1"/>
     
     <!-- 机体部件类别：contype=2, conaffinity=1，只与环境（contype=1）碰撞 -->
@@ -40,7 +40,7 @@
       <freejoint/>
       <!-- 无人机机身（立方体） -->
       <geom name="body" type="box" size="0.15 0.1 0.05" pos="0 0 0" material="white" class="body"/>
-      <inertial pos="0 0 0" mass="3.0" diaginertia="0.01 0.01 0.01"/>
+      <inertial pos="0 0 0" mass="3.0" diaginertia="0.1 0.1 0.1"/>
       
       <!-- 机腹四条腿 -->
       <body name="leg_front_right" pos="0.1 0.06 -0.05">
@@ -177,19 +177,19 @@
   <!-- 执行器定义 -->
   <actuator>
     <!-- 螺旋桨转速控制 -->
-    <motor name="motor_r_upper" site="motor_r_upper" gear="0 0 1 0 0 0.006" forcerange="0 25" ctrlrange="0 25"/>
-    <motor name="motor_r_lower" site="motor_r_lower" gear="0 0 1 0 0 -0.006" forcerange="0 25" ctrlrange="0 25"/>
-    <motor name="motor_l_upper" site="motor_l_upper" gear="0 0 1 0 0 0.006" forcerange="0 25" ctrlrange="0 25"/>
-    <motor name="motor_l_lower" site="motor_l_lower" gear="0 0 1 0 0 -0.006" forcerange="0 25" ctrlrange="0 25"/>
-    <motor name="motor_rear_upper" site="motor_rear_upper" gear="0 0 1 0 0 0" forcerange="-10 10" ctrlrange="-10 10"/>
+    <motor name="motor_r_upper" site="motor_r_upper" gear="0 0 1 0 0 -0.006" forcerange="0 25" ctrlrange="0 250"/>
+    <motor name="motor_r_lower" site="motor_r_lower" gear="0 0 1 0 0 0.006" forcerange="0 25" ctrlrange="0 250"/>
+    <motor name="motor_l_upper" site="motor_l_upper" gear="0 0 1 0 0 -0.006" forcerange="0 25" ctrlrange="0 250"/>
+    <motor name="motor_l_lower" site="motor_l_lower" gear="0 0 1 0 0 0.006" forcerange="0 25" ctrlrange="0 250"/>
+    <motor name="motor_rear_upper" site="motor_rear_upper" gear="0 0 1 0 0 0.006" forcerange="-10 10" ctrlrange="-100 100"/>
 
     <!-- 机臂偏航控制（位置伺服） -->
-    <position name="tilt_pitch_left" joint="arm_pitch_left" kp="15" kv="3" ctrllimited="true" ctrlrange="-1.57 1.57"/>
-    <position name="tilt_pitch_right" joint="arm_pitch_right" kp="15" kv="3" ctrllimited="true" ctrlrange="-1.57 1.57"/>
+    <position name="tilt_pitch_left" joint="arm_pitch_left" kp="15" kv="3"/>
+    <position name="tilt_pitch_right" joint="arm_pitch_right" kp="15" kv="3"/>
     
     <!-- 螺旋桨倾转控制（位置伺服） -->
-    <position name="tilt_roll_left" joint="prop_tilt_left" kp="15" kv="3" ctrllimited="true" ctrlrange="-1.57 1.57"/>
-    <position name="tilt_roll_right" joint="prop_tilt_right" kp="15" kv="3" ctrllimited="true" ctrlrange="-1.57 1.57"/>
+    <position name="tilt_roll_left" joint="prop_tilt_left" kp="15" kv="3"/>
+    <position name="tilt_roll_right" joint="prop_tilt_right" kp="15" kv="3"/>
   </actuator>
   
   <sensor>

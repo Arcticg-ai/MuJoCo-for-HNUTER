@@ -31,9 +31,9 @@ class HnuterController:
         
         # 几何控制器增益 (根据论文设置)
         self.Kp = np.diag([5, 5, 5])  # 位置增益
-        self.Dp = np.diag([10, 10, 10])  # 速度阻尼
-        self.KR = np.array([0.5, 0.5, 0.5])   # 姿态增益
-        self.Domega = np.array([0.05, 0.05, 0.05])  # 角速度阻尼
+        self.Dp = np.diag([5, 5, 5])  # 速度阻尼
+        self.KR = np.array([5, 0.5, 0.5])   # 姿态增益
+        self.Domega = np.array([0.05, 0.05, 0.5])  # 角速度阻尼
 
         # 控制量
         self.f_c_body = np.zeros(3)  # 机体坐标系下的控制力
@@ -228,8 +228,6 @@ class HnuterController:
             'body_acc': 'body_acc'
         }
 
-
-
         # 尝试获取传感器ID，处理可能的异常
         try:
             # 位置和姿态传感器
@@ -411,7 +409,10 @@ class HnuterController:
 
         # 将世界坐标系下的力转换到机体坐标系
         f_c_body = R.T @ f_c_world
-        
+        # 横滚力矩计算出来要加负号才能修复横滚角====== === ====================================================
+        # y方向的力需要加负号才对====== === ================================================================
+        # tau_c[0] = -tau_c[0]
+        # f_c_body[1] = -f_c_body[1]
         # 更新类成员变量
         self.f_c_body = f_c_body
         self.f_c_world = f_c_world
@@ -444,96 +445,95 @@ class HnuterController:
         
         # 组合旋转矩阵：R = R_z @ R_y @ R_x
         return R_z @ R_y @ R_x
-    
+
     def inverse_nonlinear_mapping(self, W):
         """
-        非线性逆映射函数 - 使用基于物理参数的计算
-        输入：W（6×1向量）
-        输出：uu = [F1, F2, F3, alpha1, alpha2, theta1, theta2]，其中alpha1 = alpha2
+        修正后的代数逆映射函数
+        修正逻辑：放弃物理上不可能的 alpha1=alpha2 约束，改为侧向力均分约束。
+        这样可以完美兼容差动推力产生的 Roll 力矩，不会导致侧向力(t)发散。
         """
-        # 步骤1：计算u中与t无关的分量（u1, u2, u4, u5, u7）
-        # 使用与hnuter31demo.py兼容的计算方式
-        u7 = (5/3) * W[4]                     # 由俯仰力矩确定尾部推进器力
-        u1 = W[0]/2 - (5/4)*W[5]              # 由X力和偏航力矩确定
-        u4 = W[0]/2 + (5/4)*W[5]              # 由X力和偏航力矩确定
-        u2 = (W[2] - (5/3)*W[4])/2 + (5/4)*W[3]  # 由Z力、俯仰力矩和滚转力矩确定
-        u5 = (W[2] - (5/3)*W[4])/2 - (5/4)*W[3]  # 由Z力、俯仰力矩和滚转力矩确定
+        # --- 步骤1：计算u中由 Fx, Fz, Tx, Ty, Tz 确定的刚性分量 ---
+        # 这一步你原本的逻辑是正确的，不仅包含了升力，也正确包含了差动推力(u2, u5差异)
+        
+        # 尾部推力 (由俯仰力矩确定)
+        u7 = (2/1) * W[4]                     
+        
+        # 左/右旋翼的 X轴分力 (由总Fx和偏航力矩Tz确定)
+        # 注意：这里系数 5/3 对应 1/(2*l1) = 1/0.6 approx 1.66，没问题
+        u1 = W[0]/2 - (10/3)*W[5]              
+        u4 = W[0]/2 + (10/3)*W[5]              
+        
+        # 左/右旋翼的 Z轴分力 (由总Fz-F_rear 和 滚转力矩Tx确定)
+        # 核心：当需要 Roll 力矩时，W[3]不为0，导致 u2 != u5，这就是差动推力
+        # Fz_front = W[2] - u7 # 扣除尾部承担的垂向力   尾部只贡献力矩
+        # ========== === ===========================================
+        Fz_front = W[2] # 垂向力
+        u2 = Fz_front/2 - (10/3)*W[3]  
+        u5 = Fz_front/2 + (10/3)*W[3]  
 
-        # 步骤2：利用alpha1 = alpha2约束求解u3 = t
-        C1 = u1**2 + u2**2  # F1² = C1 + t²（不含t的常数项）
-        C2 = u4**2 + u5**2  # F2² = C2 + (W2 + t)²（不含t的常数项，W2 = W(2)）
-        W2 = W[1]
+        # --- 步骤2：求解 u3 和 u6 (侧向分力 t) ---
+        # 错误逻辑(原): 强行调节 t 使得 atan(u1/u2) == atan(u4/u5)。这是不可能的。
+        # 正确逻辑(新): 利用冗余自由度，让左右旋翼平分目标侧向力 W[1] (Fy)。
         
-        # 由alpha1 = alpha2推导的t的两个可能解（线性方程解）
-        sqrtC1 = np.sqrt(C1)
-        sqrtC2 = np.sqrt(C2)
+        # 根据你的矩阵 A (Row 1): Fy = -u3 - u6
+        # 即: u3 + u6 = -W[1]
+        # 最优分配是均分负载: u3 = u6 = -W[1] / 2
+
+        target_Fy = W[1]
+        u3 = -target_Fy / 2.0
+        u6 = -target_Fy / 2.0
         
-        # 避免分母为0（物理意义上C1、C2通常非零，因u1,u2等不全为0）
-        if abs(sqrtC2 - sqrtC1) > 1e-10:
-            t1 = (W2 * sqrtC1) / (sqrtC2 - sqrtC1)  # 解1
-        else:
-            t1 = np.nan  # 解1无效
+        # --- 步骤3：反解物理量 (F, alpha, theta) ---
+        # 计算左旋翼的总推力和角度
+        F1_sq = u1**2 + u2**2 + u3**2
+        F1 = np.sqrt(F1_sq)
         
-        t2 = (-W2 * sqrtC1) / (sqrtC2 + sqrtC1)      # 解2（分母恒正，有效）
+        # 计算右旋翼的总推力和角度
+        F2_sq = u4**2 + u5**2 + u6**2
+        F2 = np.sqrt(F2_sq)
         
-        # 选择合理的t（优先保证F1、F2非负且角度在合理范围，此处选t2，可根据场景调整）
-        t_candidates = [t1, t2]
-        # 剔除无效解（NaN）
-        t_candidates = [t for t in t_candidates if not np.isnan(t)]
-        
-        # 验证候选t，选择使alpha1=alpha2且F1、F2非负的解
-        t_selected = None
-        for t_test in t_candidates:
-            u3_test = t_test
-            u6_test = -W2 - t_test
-            
-            F1_test = np.sqrt(C1 + u3_test**2)
-            F2_test = np.sqrt(C2 + u6_test**2)
-            
-            # 避免除以0（物理上力不为0）
-            if F1_test < 1e-10 or F2_test < 1e-10:
-                continue
-            
-            # 验证sin(theta1)是否等于sin(theta2)（考虑数值误差）
-            sin_theta1 = u3_test / F1_test
-            sin_theta2 = u6_test / F2_test
-            if abs(sin_theta1 - sin_theta2) < 1e-6:
-                t_selected = t_test
-                break
-        
-        # 若未找到有效解，默认用t2（工程上通常有效）
-        if t_selected is None:
-            t_selected = t2
-        
-        # 步骤3：确定u3和u6
-        u3 = t_selected
-        u6 = -W2 - u3
-        
-        # 步骤4：反推uu的7个参数（保证alpha1=alpha2）
-        # F3
+        # 尾部推力
         F3 = u7
         
-        # F1, theta1, alpha1
-        F1 = np.sqrt(C1 + u3**2)
-        alpha1 = np.arctan2(u1, u2)  # 角度范围[-π, π]，使用arctan2函数
-        theta1 = np.arcsin(u3 / F1)   # theta1 = theta2
-        
-        # F2, theta2, alpha2
-        F2 = np.sqrt(C2 + u6**2)
-        alpha2 = np.arctan2(u4, u5)  # 角度范围[-π, π]
-        theta2 = np.arcsin(u3 / F1)   # theta1 = theta2
+        # 防止除零保护
+        eps = 1e-9
+        F1_safe = F1 if F1 > eps else eps
+        F2_safe = F2 if F2 > eps else eps
 
+        # 求解角度 (这里是核心，alpha不再被强行约束相等，而是自然解出)
+        # Alpha (Pitch Tilt): 决定 X/Z 力分配
+        # 使用 arctan2(X, Z)
+        alpha1 = np.arctan2(u1, u2)  
+        alpha2 = np.arctan2(u4, u5)
+        
+        # Theta (Roll Tilt): 决定 Y 力分配 (即 u3 和 u6)
+        # 根据 MuJoCo 坐标系定义和你的矩阵A，theta 产生侧向力
+        # sin(theta) = F_y_local / F_total
+        # 注意符号：你的A矩阵暗示 u3 是负的侧向力? 
+        # A矩阵: Fy = -1*u3 -1*u6. 意味着 u3 是指向 -Y 的分量?
+        # 通常: Fy = F * sin(theta). 
+        # 如果 u3 = F * sin(theta), 那么 theta = arcsin(u3/F)
+        # 让我们保持你原本的 arcsin 逻辑，如果方向反了，无人机会往反方向飘，但这不会导致发散，只会导致漂移。
+        # 原代码: theta1 = arcsin(u3 / F1)
+        
+        # 限制范围防止 arcsin 越界
+        val1 = np.clip(u3 / F1_safe, -1.0, 1.0)
+        val2 = np.clip(u6 / F2_safe, -1.0, 1.0)
+        
+        theta1 = np.arcsin(val1)
+        theta2 = np.arcsin(val2)
+        # print(theta1)
         # 组合输出
         uu = np.array([F1, F2, F3, alpha1, alpha2, theta1, theta2])
         return uu
-    
+
     def allocate_actuators(self, f_c_body: np.ndarray, tau_c: np.ndarray, state: dict):
         """分配执行器命令（使用非线性逆映射）"""
         # 构造控制向量W（6×1向量）
         # W = [Fx, Fy, Fz, τx, τy, τz]
         W = np.array([
             f_c_body[0],    # X力
-            f_c_body[1],    # Y力（通常为0，但保留）
+            f_c_body[1],    # Y力
             f_c_body[2],    # Z力
             tau_c[0],       # 滚转力矩
             tau_c[1],       # 俯仰力矩
@@ -605,15 +605,15 @@ class HnuterController:
         """应用控制命令到执行器 - 与hnuter31demo兼容"""
         try:
             # 为保持兼容性，不使用额外增益参数
-            
+            # 修复alpha1和2对应的左右关系=========== === ====================
             # 设置机臂偏航角度 (alpha)
             if 'arm_pitch_right' in self.actuator_ids:
                 arm_pitch_right_id = self.actuator_ids['arm_pitch_right']
-                self.data.ctrl[arm_pitch_right_id] = alpha1
+                self.data.ctrl[arm_pitch_right_id] = alpha2
             
             if 'arm_pitch_left' in self.actuator_ids:
                 arm_pitch_left_id = self.actuator_ids['arm_pitch_left']
-                self.data.ctrl[arm_pitch_left_id] = alpha2
+                self.data.ctrl[arm_pitch_left_id] = alpha1
             
             # 设置螺旋桨倾转角度 (theta)
             if 'prop_tilt_right' in self.actuator_ids:
@@ -666,8 +666,11 @@ class HnuterController:
             # 分配执行器命令
             T12, T34, T5, alpha1, alpha2, theta1, theta2 = self.allocate_actuators(f_c_body, tau_c, state)
             
+            # 要禁用掉theta才会不发生横滚向一侧倾覆 ===================================================
             # 应用控制
             self.set_actuators(T12, T34, T5, alpha1, alpha2, theta1, theta2)
+            # self.set_actuators(T12, T34, T5, alpha1, alpha2, 0, 0)
+            # self.set_actuators(0, 0, 0, alpha1, alpha2, theta1, theta2)
             
             # 记录状态
             self.log_status(state)
@@ -690,6 +693,9 @@ class HnuterController:
             print(f"位置: X={pos[0]:.2f}m, Y={pos[1]:.2f}m, Z={pos[2]:.2f}m")
             print(f"目标位置: X={self.target_position[0]:.2f}m, Y={self.target_position[1]:.2f}m, Z={self.target_position[2]:.2f}m")
             print(f"姿态: Roll={euler_deg[0]:.6f}°, Pitch={euler_deg[1]:.6f}°, Yaw={euler_deg[2]:.6f}°")  
+            print(euler_deg[0])
+            print(pos[1])
+            print(self.f_c_body[1])
             print(f"目标姿态: Roll={target_euler_deg[0]:.1f}°, Pitch={target_euler_deg[1]:.1f}°, Yaw={target_euler_deg[2]:.1f}°") 
             print(f"速度: X={vel[0]:.2f}m/s, Y={vel[1]:.2f}m/s, Z={vel[2]:.2f}m/s")
             print(f"加速度: X={accel[0]:.2f}m/s², Y={accel[1]:.2f}m/s², Z={accel[2]:.2f}m/s²")
@@ -728,10 +734,10 @@ def main():
         controller = HnuterController("hnuter201.xml")
         
         # 设置目标轨迹（简单悬停）
-        controller.target_position = np.array([1.0, 0.0, 1.5])  # 目标高度1.5米
+        controller.target_position = np.array([1.0, 1.0, 2.0])  # 目标高度1.5米
         controller.target_velocity = np.zeros(3)
         controller.target_acceleration = np.zeros(3)
-        controller.target_attitude = np.array([0.0, -0.6, 0.0])  # 水平姿态
+        controller.target_attitude = np.array([0.0, 0.0, 0.0])  # 水平姿态
         controller.target_attitude_rate = np.zeros(3)
         controller.target_attitude_acceleration = np.zeros(3)
         

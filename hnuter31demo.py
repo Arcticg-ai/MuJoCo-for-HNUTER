@@ -30,10 +30,10 @@ class HnuterController:
         self.k_d = 8.1e-8  # 尾部反扭矩系数
         
         # 几何控制器增益 (根据论文设置)
-        self.Kp = np.diag([5, 5, 5])  # 位置增益
-        self.Dp = np.diag([10, 10, 10])  # 速度阻尼
-        self.KR = np.array([1, 1.2, 0.6])   # 姿态增益
-        self.Domega = np.array([0.1, 0.2, 0.1])  # 角速度阻尼
+        self.Kp = np.diag([15, 15, 20])  # 位置增益
+        self.Dp = np.diag([8, 8, 10])  # 速度阻尼
+        self.KR = np.array([0.5, 0.5, 0.5])   # 姿态增益
+        self.Domega = np.array([0.05, 0.05, 0.05])  # 角速度阻尼
         # 积分分离和抗饱和机制相关属性
         self.integral_separation_threshold = 0.2  # 积分分离阈值（弧度）
         self.integral_error = np.zeros(3)  # 积分误差累积
@@ -570,19 +570,20 @@ class HnuterController:
         alpha2 = uu[4]
         theta1 = uu[5]
         theta2 = uu[6]
-        
+        # print(alpha1)
         T_max = 50
         F1 = np.clip(F1, 0, T_max)
         F2 = np.clip(F2, 0, T_max)
         F3 = np.clip(F3, -10, 10)
         
-        alpha_max = np.radians(85)
+        alpha_max = np.radians(100)
         alpha1 = np.clip(alpha1, -alpha_max, alpha_max)
         alpha2 = np.clip(alpha2, -alpha_max, alpha_max)
-        theta_max = np.radians(85)
+        theta_max = np.radians(100)
         theta1 = np.clip(theta1, -theta_max, theta_max)
         theta2 = np.clip(theta2, -theta_max, theta_max)
         
+
         self.T12 = F1
         self.T34 = F2
         self.T5 = F3
@@ -591,6 +592,7 @@ class HnuterController:
         self.theta1 = theta1
         self.theta2 = theta2
         
+
         self.u = np.array([F1, F2, F3, alpha1, alpha2, theta2, theta2])
         
         return F1, F2, F3, alpha1, alpha2, theta1, theta2
@@ -648,7 +650,10 @@ class HnuterController:
             T12, T34, T5, alpha1, alpha2, theta1, theta2 = self.allocate_actuators(f_c_body, tau_c, state)
             
             self.set_actuators(T12, T34, T5, alpha1, alpha2, theta1, theta2)
+
+            # self.set_actuators(0, 0, T5, alpha1, alpha2, theta1, theta2)
             
+            # self.set_actuators(T12, T12, T5, 0, 0, 0, 0)
             return True
         except Exception as e:
             print(f"控制更新失败: {e}")
@@ -706,10 +711,10 @@ def main():
     try:
         controller = HnuterController("hnuter201.xml")
         
-        controller.target_position = np.array([1.0, 0.0, 1.5])
+        controller.target_position = np.array([0.0, 0.0, 2.0])
         controller.target_velocity = np.zeros(3)
         controller.target_acceleration = np.zeros(3)
-        controller.target_attitude = np.array([0.0, 0.0, 0.0])
+        controller.target_attitude = np.array([0.0, 0.5, 0.0])
         controller.target_attitude_rate = np.zeros(3)
         controller.target_attitude_acceleration = np.zeros(3)
         

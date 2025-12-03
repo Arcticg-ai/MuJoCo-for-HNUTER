@@ -164,8 +164,8 @@ class HnuterController:
         self.actuator_ids = {}
         
         # 机臂偏航执行器
-        self.actuator_ids['arm_yaw_right'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_ACTUATOR, 'tilt_yaw_right')
-        self.actuator_ids['arm_yaw_left'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_ACTUATOR, 'tilt_yaw_left')
+        self.actuator_ids['arm_pitch_right'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_ACTUATOR, 'tilt_pitch_right')
+        self.actuator_ids['arm_pitch_left'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_ACTUATOR, 'tilt_pitch_left')
         
         # 螺旋桨倾转执行器
         self.actuator_ids['prop_tilt_right'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_ACTUATOR, 'tilt_roll_right')
@@ -210,7 +210,7 @@ class HnuterController:
         
         # 倾转角度传感器
         tilt_sensors = [
-            'arm_yaw_right_pos', 'arm_yaw_left_pos',
+            'arm_pitch_right_pos', 'arm_pitch_left_pos',
             'prop_tilt_right_pos', 'prop_tilt_left_pos'
         ]
         for name in tilt_sensors:
@@ -467,13 +467,13 @@ class HnuterController:
         """应用控制命令到执行器"""
         try:
             # 设置机臂偏航角度（保持水平）
-            if 'arm_yaw_right' in self.actuator_ids:
-                arm_yaw_right_id = self.actuator_ids['arm_yaw_right']
-                self.data.ctrl[arm_yaw_right_id] = alpha1  # 保持水平
+            if 'arm_pitch_right' in self.actuator_ids:
+                arm_pitch_right_id = self.actuator_ids['arm_pitch_right']
+                self.data.ctrl[arm_pitch_right_id] = alpha1  # 保持水平
             
-            if 'arm_yaw_left' in self.actuator_ids:
-                arm_yaw_left_id = self.actuator_ids['arm_yaw_left']
-                self.data.ctrl[arm_yaw_left_id] = alpha2  # 保持水平
+            if 'arm_pitch_left' in self.actuator_ids:
+                arm_pitch_left_id = self.actuator_ids['arm_pitch_left']
+                self.data.ctrl[arm_pitch_left_id] = alpha2  # 保持水平
             
             # 设置螺旋桨倾转角度
             if 'prop_tilt_right' in self.actuator_ids:
@@ -565,7 +565,7 @@ def main():
     try:
 
         # 初始化控制器
-        controller = HnuterController("hnuter2_01.xml")
+        controller = HnuterController("hnuter203.xml")
         
         # 启动 Viewer
         with viewer.launch_passive(controller.model, controller.data) as v:
@@ -589,10 +589,10 @@ def main():
                     # 获取当前状态
                     state = controller.get_state()
                     
-                    controller.set_actuators(20,20,0.098,0,0,0,0)
+                    controller.set_actuators(0,0,0, 0.5,0,0,0)
 
                     count = count + 1
-                    if count % 20 == 0:
+                    if count % 1 == 0:
                         # 仿真步进
                         mj.mj_step(controller.model, controller.data)
                     
