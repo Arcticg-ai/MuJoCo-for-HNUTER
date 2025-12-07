@@ -32,8 +32,8 @@ class HnuterController:
         # 几何控制器增益 (根据论文设置)
         self.Kp = np.diag([5, 5, 5])  # 位置增益
         self.Dp = np.diag([5, 5, 5])  # 速度阻尼
-        self.KR = np.array([0.5, 0.5, 0.5])   # 姿态增益
-        self.Domega = np.array([0.5, 0.5, 0.5])  # 角速度阻尼
+        self.KR = np.array([5, 10, 5])   # 姿态增益
+        self.Domega = np.array([0.5, 5, 0.5])  # 角速度阻尼
 
         # 控制量
         self.f_c_body = np.zeros(3)  # 机体坐标系下的控制力
@@ -125,13 +125,17 @@ class HnuterController:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.log_file = f'logs/drone_log_{timestamp}.csv'
         
-        # 写入CSV表头
+        # 写入CSV表头（新增四元数列）
         with open(self.log_file, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow([
                 'timestamp', 'pos_x', 'pos_y', 'pos_z', 
                 'target_x', 'target_y', 'target_z',
                 'roll', 'pitch', 'yaw',
+                'target_roll', 'target_pitch', 'target_yaw',
+                # 新增四元数列
+                'curr_quat_w', 'curr_quat_x', 'curr_quat_y', 'curr_quat_z',
+                'target_quat_w', 'target_quat_x', 'target_quat_y', 'target_quat_z',
                 'vel_x', 'vel_y', 'vel_z',
                 'angular_vel_x', 'angular_vel_y', 'angular_vel_z',
                 'accel_x', 'accel_y', 'accel_z',
@@ -147,7 +151,7 @@ class HnuterController:
         print(f"已创建日志文件: {self.log_file}")
     
     def log_status(self, state: dict):
-        """记录状态到日志文件"""
+        """记录状态到日志文件（新增四元数记录）"""
         timestamp = time.time()
         # 确保状态字典中有所有必要的键
         position = state.get('position', np.zeros(3))
@@ -155,6 +159,9 @@ class HnuterController:
         angular_velocity = state.get('angular_velocity', np.zeros(3))
         acceleration = state.get('acceleration', np.zeros(3))
         euler = state.get('euler', np.zeros(3))
+        current_quat = state.get('quaternion', np.array([1.0, 0.0, 0.0, 0.0]))
+        # 计算期望姿态四元数
+        target_quat = self._euler_to_quaternion(self.target_attitude)
         
         with open(self.log_file, 'a', newline='') as csvfile:
             writer = csv.writer(csvfile)
@@ -163,6 +170,10 @@ class HnuterController:
                 position[0], position[1], position[2],
                 self.target_position[0], self.target_position[1], self.target_position[2],
                 euler[0], euler[1], euler[2],
+                self.target_attitude[0], self.target_attitude[1], self.target_attitude[2],
+                # 写入四元数
+                current_quat[0], current_quat[1], current_quat[2], current_quat[3],
+                target_quat[0], target_quat[1], target_quat[2], target_quat[3],
                 velocity[0], velocity[1], velocity[2],
                 angular_velocity[0], angular_velocity[1], angular_velocity[2],
                 acceleration[0], acceleration[1], acceleration[2],
@@ -364,6 +375,29 @@ class HnuterController:
         yaw = math.atan2(siny_cosp, cosy_cosp)
         
         return np.array([roll, pitch, yaw])
+    
+    def _euler_to_quaternion(self, euler: np.ndarray) -> np.ndarray:
+        """
+        欧拉角（roll, pitch, yaw）转四元数 [w, x, y, z]
+        匹配_quat_to_euler的逆变换（RPY顺序，XYZ内旋）
+        """
+        roll, pitch, yaw = euler
+        
+        # 计算半角
+        cy = math.cos(yaw * 0.5)
+        sy = math.sin(yaw * 0.5)
+        cp = math.cos(pitch * 0.5)
+        sp = math.sin(pitch * 0.5)
+        cr = math.cos(roll * 0.5)
+        sr = math.sin(roll * 0.5)
+        
+        # 计算四元数分量（RPY顺序，XYZ内旋）
+        w = cr * cp * cy + sr * sp * sy
+        x = sr * cp * cy - cr * sp * sy
+        y = cr * sp * cy + sr * cp * sy
+        z = cr * cp * sy - sr * sp * cy
+        
+        return np.array([w, x, y, z])
     
     def vee_map(self, S: np.ndarray) -> np.ndarray:
         """反对称矩阵的vee映射"""
@@ -648,7 +682,8 @@ class HnuterController:
             T12, T34, T5, alpha1, alpha2, theta1, theta2 = self.allocate_actuators(f_c_body, tau_c, state)
             
             # 应用控制
-            self.set_actuators(T12, T34, T5, alpha1, alpha2, theta1, theta2)
+            # self.set_actuators(T12, T34, T5, alpha1, alpha2, theta1, theta2)
+            self.set_actuators(T12, T12, T5, alpha1, alpha2, 0, 0)
             
             # 记录状态
             self.log_status(state)
@@ -659,7 +694,7 @@ class HnuterController:
             return False
     
     def print_status(self):
-        """打印当前状态信息（包含控制信息）"""
+        """打印当前状态信息（新增四元数输出）"""
         try:
             state = self.get_state()
             pos = state['position']
@@ -668,15 +703,18 @@ class HnuterController:
             euler_deg = np.degrees(state['euler'])
             target_euler_deg = np.degrees(self.target_attitude)
             
+            # 获取当前姿态四元数
+            current_quat = state['quaternion']
+            # 计算期望姿态四元数
+            target_quat = self._euler_to_quaternion(self.target_attitude)
+            
             print(f"位置: X={pos[0]:.2f}m, Y={pos[1]:.2f}m, Z={pos[2]:.2f}m")
             print(f"目标位置: X={self.target_position[0]:.2f}m, Y={self.target_position[1]:.2f}m, Z={self.target_position[2]:.2f}m")
             print(f"姿态: Roll={euler_deg[0]:.6f}°, Pitch={euler_deg[1]:.6f}°, Yaw={euler_deg[2]:.6f}°")  
-            print(euler_deg[0])
-            print(euler_deg[1])
-            print(euler_deg[2])
-            # print(pos[1])
-            # print(self.f_c_body[1])
             print(f"目标姿态: Roll={target_euler_deg[0]:.1f}°, Pitch={target_euler_deg[1]:.1f}°, Yaw={target_euler_deg[2]:.1f}°") 
+            # 新增四元数输出
+            print(f"当前姿态四元数: w={current_quat[0]:.4f}, x={current_quat[1]:.4f}, y={current_quat[2]:.4f}, z={current_quat[3]:.4f}")
+            print(f"期望姿态四元数: w={target_quat[0]:.4f}, x={target_quat[1]:.4f}, y={target_quat[2]:.4f}, z={target_quat[3]:.4f}")
             print(f"速度: X={vel[0]:.2f}m/s, Y={vel[1]:.2f}m/s, Z={vel[2]:.2f}m/s")
             print(f"加速度: X={accel[0]:.2f}m/s², Y={accel[1]:.2f}m/s², Z={accel[2]:.2f}m/s²")
             print(f"控制力: X={self.f_c_body[0]:.2f}N, Y={self.f_c_body[1]:.2f}N, Z={self.f_c_body[2]:.2f}N")
@@ -717,7 +755,7 @@ def main():
         controller.target_position = np.array([0.0, 0.0, 2.0])  # 目标高度1.5米
         controller.target_velocity = np.zeros(3)
         controller.target_acceleration = np.zeros(3)
-        controller.target_attitude = np.array([0.0, 0.0, 0.5])  # 水平姿态
+        controller.target_attitude = np.array([0.0, 1.5, 0.0])  # 水平姿态
         
         controller.target_attitude_rate = np.zeros(3)
         controller.target_attitude_acceleration = np.zeros(3)
