@@ -29,21 +29,11 @@ class HnuterController:
         self.l2 = 0.5  # 尾部推进器X向距离(m)
         self.k_d = 8.1e-8  # 尾部反扭矩系数
         
-        # 几何控制器增益（针对90°大角度微调）
-        # self.Kp = np.diag([6, 6, 6])  # 位置增益适度提高
-        # self.Dp = np.diag([5, 5, 5])  # 速度阻尼
-        # self.KR = np.array([3, 12, 0.8])   # 姿态增益适度提高，增强大角度跟踪
-        # self.Domega = np.array([0.6, 6, 0.6])  # 角速度阻尼适度提高
-
-        # self.Kp = np.diag([6, 6, 6])  # 位置增益适度提高
-        # self.Dp = np.diag([5, 5, 5])  # 速度阻尼
-        # self.KR = np.array([3, 0.8, 0.5])   # 姿态增益适度提高，增强大角度跟踪
-        # self.Domega = np.array([0.6, 0.6, 0.6])  # 角速度阻尼适度提高
-
+        # 几何控制器增益（适配45°姿态限制）
         self.Kp = np.diag([6, 6, 6])  # 位置增益适度提高
         self.Dp = np.diag([5, 5, 5])  # 速度阻尼
-        self.KR = np.array([3, 1.2, 0.3])   # 姿态增益适度提高，增强大角度跟踪
-        self.Domega = np.array([0.9, 0.4, 0.6])  # 角速度阻尼适度提高
+        self.KR = np.array([3, 0.8, 0.3])   # 姿态增益适度提高，增强大角度跟踪
+        self.Domega = np.array([0.9, 0.6, 0.6])  # 角速度阻尼适度提高
 
         # 控制量
         self.f_c_body = np.zeros(3)  # 机体坐标系下的控制力
@@ -94,13 +84,41 @@ class HnuterController:
         # 创建日志文件
         self._create_log_file()
 
-        # ========== 核心修改：90°大角度轨迹控制 ==========
-        self.trajectory_phase = 0  # 阶段划分更细致
-        self.attitude_target_rad = np.pi*2/5  # 目标姿态角度（90度转弧度，核心修改）
+        # ========== 核心修改：限制姿态角≤±45° ==========
+        self.trajectory_phase = 0  # 轨迹阶段
         self.phase_start_time = 0.0  # 各阶段起始时间
-        self.attitude_tolerance = 0.08  # 90°大角度下适度放宽tolerance（弧度）
+        self.max_attitude_angle = np.pi/4  # 最大姿态角（45°，核心限制）
+        
+        # 复杂轨迹参数配置（姿态幅值≤45°）
+        self.trajectory_params = {
+            # 圆形轨迹参数
+            "circle_radius": 2.0,          # 圆半径(m)
+            "circle_omega": 0.3,           # 圆周运动角速度(rad/s)
+            "circle_z": 2.0,               # 圆形轨迹高度(m)
+            
+            # 8字形轨迹参数 (李萨如曲线)
+            "figure8_a": 1.5,              # 8字x轴幅值
+            "figure8_b": 1.0,              # 8字y轴幅值
+            "figure8_omega": 0.25,         # 8字运动角速度
+            "figure8_z_base": 2.5,         # 8字基础高度
+            "figure8_z_amp": 0.5,          # 8字高度波动幅值
+            
+            # 螺旋轨迹参数
+            "spiral_radius_start": 1.0,    # 螺旋起始半径
+            "spiral_radius_end": 3.0,      # 螺旋终止半径
+            "spiral_omega": 0.4,           # 螺旋角速度
+            "spiral_z_start": 2.0,         # 螺旋起始高度
+            "spiral_z_end": 3.0,           # 螺旋终止高度
+            "spiral_duration": 20.0,       # 螺旋运动时长
+            
+            # 姿态随轨迹变化参数（所有轴≤45°）
+            "attitude_amp_roll": np.pi/6,  # 滚转最大幅值(30°，≤45°)
+            "attitude_amp_pitch": np.pi/8, # 俯仰最大幅值(22.5°，≤45°)
+            "attitude_amp_yaw": np.pi/4,   # 偏航最大幅值(45°，上限)
+            "attitude_omega": 0.5,         # 姿态变化角速度
+        }
 
-        print("倾转旋翼控制器初始化完成（适配90°大角度姿态跟踪）")
+        print("倾转旋翼控制器初始化完成（姿态角限制≤±45°）")
     
     def _print_model_diagnostics(self):
         """打印模型诊断信息"""
@@ -139,9 +157,9 @@ class HnuterController:
         
         # 创建带时间戳的文件名
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_file = f'logs/drone_log_90deg_{timestamp}.csv'  # 标注90度日志
+        self.log_file = f'logs/drone_log_complex_trajectory_45deg_{timestamp}.csv'  # 标注45°限制
         
-        # 写入CSV表头（新增轨迹阶段）
+        # 写入CSV表头（新增轨迹阶段和轨迹类型）
         with open(self.log_file, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow([
@@ -161,13 +179,13 @@ class HnuterController:
                 'T12', 'T34', 'T5',
                 'alpha1', 'alpha2',
                 'theta1', 'theta2',
-                'trajectory_phase'
+                'trajectory_phase', 'trajectory_type'
             ])
         
-        print(f"已创建90°姿态跟踪日志文件: {self.log_file}")
+        print(f"已创建45°限制复杂轨迹日志文件: {self.log_file}")
     
     def log_status(self, state: dict):
-        """记录状态到日志文件"""
+        """记录状态到日志文件（新增轨迹类型）"""
         timestamp = time.time()
         position = state.get('position', np.zeros(3))
         velocity = state.get('velocity', np.zeros(3))
@@ -176,6 +194,18 @@ class HnuterController:
         euler = state.get('euler', np.zeros(3))
         current_quat = state.get('quaternion', np.array([1.0, 0.0, 0.0, 0.0]))
         target_quat = self._euler_to_quaternion(self.target_attitude)
+        
+        # 轨迹类型映射
+        phase_to_type = {
+            0: "takeoff_hover",
+            1: "circular_trajectory",
+            2: "figure8_trajectory",
+            3: "spiral_trajectory",
+            4: "return_hover",
+            5: "complex_attitude_maneuver",
+            6: "final_hover"
+        }
+        trajectory_type = phase_to_type.get(self.trajectory_phase, "unknown")
         
         with open(self.log_file, 'a', newline='') as csvfile:
             writer = csv.writer(csvfile)
@@ -197,7 +227,7 @@ class HnuterController:
                 self.T12, self.T34, self.T5,
                 self.alpha1, self.alpha2,
                 self.theta1, self.theta2,
-                self.trajectory_phase
+                self.trajectory_phase, trajectory_type
             ])
     
     def _get_actuator_ids(self):
@@ -412,8 +442,7 @@ class HnuterController:
         
         # 控制力矩
         tau_c = -self.KR * e_R - self.Domega * omega_error
-        # tau_c[0] = 0.0
-        # tau_c[2] = 0.0
+        
         # 转换到机体坐标系
         f_c_body = R.T @ f_c_world
         
@@ -449,7 +478,7 @@ class HnuterController:
         return R_z @ R_y @ R_x
 
     def inverse_nonlinear_mapping(self, W):
-        """修正后的代数逆映射函数（适配90°大角度）"""
+        """修正后的代数逆映射函数（适配45°姿态限制）"""
         # 尾部推力 (由俯仰力矩确定)
         u7 = (2/1) * W[4]                     
         
@@ -467,21 +496,21 @@ class HnuterController:
         u3 = -target_Fy / 2.0
         u6 = -target_Fy / 2.0
         
-        # 计算推力和角度（增加90°大角度保护）
+        # 计算推力和角度（增加数值稳定性）
         F1 = np.sqrt(u1**2 + u2**2 + u3**2)
         F2 = np.sqrt(u4**2 + u5**2 + u6**2)
         F3 = u7
         
-        # 防止除零保护（90°大角度下更严格）
+        # 防止除零保护
         eps = 1e-8
         F1_safe = F1 if F1 > eps else eps
         F2_safe = F2 if F2 > eps else eps
 
-        # 求解倾转角度（增加数值稳定性）
+        # 求解倾转角度
         alpha1 = np.arctan2(u1, u2)  
         alpha2 = np.arctan2(u4, u5)
         
-        val1 = np.clip(u3 / F1_safe, -1.0 + eps, 1.0 - eps)  # 避免arcsin(±1)的数值问题
+        val1 = np.clip(u3 / F1_safe, -1.0 + eps, 1.0 - eps)
         val2 = np.clip(u6 / F2_safe, -1.0 + eps, 1.0 - eps)
         
         theta1 = np.arcsin(val1)
@@ -513,17 +542,17 @@ class HnuterController:
         theta1 = uu[5]  # pitch左倾角
         theta2 = uu[6]  # pitch右倾角
         
-        # 推力限制（90°大角度下适度提高上限）
-        T_max = 60
+        # 推力限制
+        T_max = 80
         F1 = np.clip(F1, 0, T_max)
         F2 = np.clip(F2, 0, T_max)
-        F3 = np.clip(F3, -15, 15)
+        F3 = np.clip(F3, -20, 20)
         
-        # 角度限制（90°大角度，匹配目标）
-        alpha_max = np.radians(95)  # 略大于90°，留有余量
+        # 角度限制（适配45°姿态限制，倾转角度也适度减小）
+        alpha_max = np.radians(60)  # 倾转角度≤60°（配合姿态限制）
         alpha1 = np.clip(alpha1, -alpha_max, alpha_max)
         alpha2 = np.clip(alpha2, -alpha_max, alpha_max)
-        theta_max = np.radians(95)
+        theta_max = np.radians(60)
         theta1 = np.clip(theta1, -theta_max, theta_max)
         theta2 = np.clip(theta2, -theta_max, theta_max)
         
@@ -616,7 +645,7 @@ class HnuterController:
             return False
     
     def print_status(self):
-        """打印当前状态信息（含90°大角度标注）"""
+        """打印当前状态信息（含45°限制标注）"""
         try:
             state = self.get_state()
             pos = state['position']
@@ -627,27 +656,23 @@ class HnuterController:
             current_quat = state['quaternion']
             target_quat = self._euler_to_quaternion(self.target_attitude)
             
-            # 阶段名称映射（更新为90°标注）
+            # 阶段名称映射（复杂轨迹+45°限制）
             phase_names = {
                 0: "起飞悬停",
-                1: "Roll转动(0°→90°)",
-                2: "Roll保持(90°，稳定5s)",
-                3: "Roll恢复(90°→0°)",
-                4: "Pitch转动(0°→90°)",
-                5: "Pitch保持(90°，稳定5s)",
-                6: "Pitch恢复(90°→0°)",
-                7: "Yaw转动(0°→90°)",
-                8: "Yaw保持(90°，稳定5s)",
-                9: "Yaw恢复(90°→0°)",
-                10: "最终悬停"
+                1: "圆形轨迹 (半径2m，高度2m)",
+                2: "8字形轨迹 (李萨如曲线，高度2.0-3.0m)",
+                3: "螺旋上升轨迹 (半径1-3m，高度2-4m)",
+                4: "返回原点",
+                5: "复杂姿态机动 (≤45°)",
+                6: "最终悬停"
             }
             phase_name = phase_names.get(self.trajectory_phase, "未知阶段")
             
             print(f"\n=== 轨迹阶段: {self.trajectory_phase} ({phase_name}) ===")
             print(f"位置: X={pos[0]:.8f}m, Y={pos[1]:.8f}m, Z={pos[2]:.8f}m")
             print(f"目标位置: X={self.target_position[0]:.8f}m, Y={self.target_position[1]:.8f}m, Z={self.target_position[2]:.8f}m")
-            print(f"姿态: Roll={euler_deg[0]:.2f}°, Pitch={euler_deg[1]:.2f}°, Yaw={euler_deg[2]:.2f}°")  
-            print(f"控制力矩: X={self.tau_c[0]}Nm, Y={self.tau_c[1]}Nm, Z={self.tau_c[2]}Nm")
+            print(f"姿态: Roll={euler_deg[0]:.2f}°, Pitch={euler_deg[1]:.2f}°, Yaw={euler_deg[2]:.2f}° (限制≤±45°)")  
+            print(f"控制力矩: X={self.tau_c[0]:.2f}Nm, Y={self.tau_c[1]:.2f}Nm, Z={self.tau_c[2]:.2f}Nm")
             print(f"目标姿态: Roll={target_euler_deg[0]:.1f}°, Pitch={target_euler_deg[1]:.1f}°, Yaw={target_euler_deg[2]:.1f}°") 
             print(f"角速度: Roll={np.degrees(state['angular_velocity'][0]):.2f}°/s, Pitch={np.degrees(state['angular_velocity'][1]):.2f}°/s, Yaw={np.degrees(state['angular_velocity'][2]):.2f}°/s")
             print(f"执行器状态: T12={self.T12:.2f}N, T34={self.T34:.2f}N, T5={self.T5:.2f}N, α1={math.degrees(self.alpha1):.2f}°, α2={math.degrees(self.alpha2):.2f}°, θ1={math.degrees(self.theta1):.2f}°, θ2={math.degrees(self.theta2):.2f}°")
@@ -657,37 +682,29 @@ class HnuterController:
     
     def update_trajectory(self, current_time: float):
         """
-        适配90°大角度的轨迹发布器（延长时间确保稳定）
-        阶段划分（总时长~70秒）：
-        0: 0~6s    - 起飞悬停（升到2m高度，姿态归零，确保稳定）
-        1: 6~18s   - Roll缓慢转动（12秒从0°→90°，角速度≈7.5°/s）
-        2: 18~23s  - Roll保持（5秒，稳定在90°）
-        3: 23~29s  - Roll恢复（6秒从90°→0°）
-        4: 29~41s  - Pitch缓慢转动（12秒从0°→90°）
-        5: 41~46s  - Pitch保持（5秒，稳定在90°）
-        6: 46~52s  - Pitch恢复（6秒从90°→0°）
-        7: 52~64s  - Yaw缓慢转动（12秒从0°→90°）
-        8: 64~69s  - Yaw保持（5秒，稳定在90°）
-        9: 69~75s  - Yaw恢复（6秒从90°→0°）
-        10: 75s~   - 最终悬停（姿态归零，高度2m）
+        核心修改：复杂轨迹生成器（姿态角≤±45°）
+        阶段划分（总时长~120秒）：
+        0: 0~8s    - 起飞悬停（升到2m高度，稳定）
+        1: 8~38s   - 圆形轨迹（半径2m，高度2m，姿态≤30°）
+        2: 38~68s  - 8字形轨迹（李萨如曲线，高度2.0-3.0m，姿态≤30°）
+        3: 68~98s  - 螺旋上升轨迹（半径1→3m，高度2→4m，姿态≤30°）
+        4: 98~108s - 返回原点（10秒）
+        5: 108~118s- 复杂姿态机动（Roll≤45°/Pitch≤30°/Yaw≤45°）
+        6: 118s~   - 最终悬停
         """
         # 初始化阶段起始时间
         if self.trajectory_phase == 0 and self.phase_start_time == 0.0:
             self.phase_start_time = current_time
         
-        # 阶段时长配置（90°大角度专属）
+        # 阶段时长配置
         phase_durations = {
-            0: 6.0,    # 起飞悬停（延长到6秒，确保高度稳定）
-            1: 12.0,   # Roll转动（12秒，90°大角度缓慢变化）
-            2: 5.0,    # Roll保持（5秒，稳定90°姿态）
-            3: 6.0,    # Roll恢复（6秒，平稳回零）
-            4: 12.0,   # Pitch转动（12秒）
-            5: 5.0,    # Pitch保持（5秒）
-            6: 6.0,    # Pitch恢复（6秒）
-            7: 12.0,   # Yaw转动（12秒）
-            8: 5.0,    # Yaw保持（5秒）
-            9: 6.0,    # Yaw恢复（6秒）
-            10: float('inf')  # 最终悬停
+            0: 8.0,     # 起飞悬停
+            1: 30.0,    # 圆形轨迹
+            2: 30.0,    # 8字形轨迹
+            3: 30.0,    # 螺旋轨迹
+            4: 10.0,    # 返回原点
+            5: 10.0,    # 复杂姿态机动
+            6: float('inf')  # 最终悬停
         }
         
         # 计算当前阶段已运行时间
@@ -699,125 +716,236 @@ class HnuterController:
             self.phase_start_time = current_time  # 重置阶段起始时间
             print(f"\n🔄 轨迹阶段切换: {self.trajectory_phase-1} → {self.trajectory_phase}")
         
-        # 各阶段轨迹逻辑（所有阶段保持高度2m，只变化姿态）
+        # ========== 各阶段复杂轨迹生成（姿态≤45°） ==========
         if self.trajectory_phase == 0:
-            # 阶段0：起飞悬停（高度稳定在2m，姿态归零）
+            # 阶段0：起飞悬停
             self.target_position = np.array([0.0, 0.0, 2.0])
             self.target_attitude = np.array([0.0, 0.0, 0.0])
+            self.target_velocity = np.zeros(3)
+            self.target_acceleration = np.zeros(3)
             
         elif self.trajectory_phase == 1:
-            # 阶段1：Roll缓慢转动（0°→90°，线性插值）
-            progress = phase_elapsed / phase_durations[1]  # 0~1
-            progress = np.clip(progress, 0.0, 1.0)
-            roll_target = progress * self.attitude_target_rad
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([roll_target, 0.0, 0.0])
+            # 阶段1：圆形轨迹 (x=Rcosωt, y=Rsinωt, z=恒定)
+            t = phase_elapsed
+            R = self.trajectory_params["circle_radius"]
+            omega = self.trajectory_params["circle_omega"]
+            z = self.trajectory_params["circle_z"]
+            
+            # 位置
+            x = R * np.cos(omega * t)
+            y = R * np.sin(omega * t)
+            self.target_position = np.array([x, y, z])
+            
+            # 速度（一阶导数）
+            vx = -R * omega * np.sin(omega * t)
+            vy = R * omega * np.cos(omega * t)
+            vz = 0.0
+            self.target_velocity = np.array([vx, vy, vz])
+            
+            # 加速度（二阶导数）
+            ax = -R * omega**2 * np.cos(omega * t)
+            ay = -R * omega**2 * np.sin(omega * t)
+            az = 0.0
+            self.target_acceleration = np.array([ax, ay, az])
+            
+            # 姿态随轨迹变化（≤30°，Yaw跟踪切线方向）
+            yaw = np.arctan2(vy, vx)  # 航向跟踪速度方向（自然≤45°）
+            roll = self.trajectory_params["attitude_amp_roll"] * np.sin(2 * omega * t)  # 30°
+            pitch = self.trajectory_params["attitude_amp_pitch"] * np.cos(2 * omega * t)  # 22.5°
+            # 最终clip到±45°（双重保险）
+            roll = np.clip(roll, -self.max_attitude_angle, self.max_attitude_angle)
+            pitch = np.clip(pitch, -self.max_attitude_angle, self.max_attitude_angle)
+            yaw = np.clip(yaw, -self.max_attitude_angle, self.max_attitude_angle)
+            self.target_attitude = np.array([roll, pitch, yaw])
+            
+            # 姿态角速度
+            self.target_attitude_rate = np.array([
+                2 * omega * self.trajectory_params["attitude_amp_roll"] * np.cos(2 * omega * t),
+                -2 * omega * self.trajectory_params["attitude_amp_pitch"] * np.sin(2 * omega * t),
+                omega  # yaw角速度等于圆周运动角速度
+            ])
             
         elif self.trajectory_phase == 2:
-            # 阶段2：Roll保持（稳定在90°）
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([self.attitude_target_rad, 0.0, 0.0])
+            # 阶段2：8字形轨迹 (李萨如曲线: x=Asinωt, y=Bsin2ωt, z=z0+A_z*sinωt)
+            t = phase_elapsed
+            A = self.trajectory_params["figure8_a"]
+            B = self.trajectory_params["figure8_b"]
+            omega = self.trajectory_params["figure8_omega"]
+            z_base = self.trajectory_params["figure8_z_base"]
+            z_amp = self.trajectory_params["figure8_z_amp"]
+            
+            # 位置（李萨如曲线）
+            x = A * np.sin(omega * t)
+            y = B * np.sin(2 * omega * t)
+            z = z_base + z_amp * np.sin(omega * t)
+            self.target_position = np.array([x, y, z])
+            
+            # 速度
+            vx = A * omega * np.cos(omega * t)
+            vy = 2 * B * omega * np.cos(2 * omega * t)
+            vz = z_amp * omega * np.cos(omega * t)
+            self.target_velocity = np.array([vx, vy, vz])
+            
+            # 加速度
+            ax = -A * omega**2 * np.sin(omega * t)
+            ay = -4 * B * omega**2 * np.sin(2 * omega * t)
+            az = -z_amp * omega**2 * np.sin(omega * t)
+            self.target_acceleration = np.array([ax, ay, az])
+            
+            # 姿态随轨迹变化（≤30°）
+            yaw = np.arctan2(vy, vx) if np.sqrt(vx**2 + vy**2) > 0.01 else 0.0
+            roll = self.trajectory_params["attitude_amp_roll"] * np.sin(3 * omega * t)  # 30°
+            pitch = self.trajectory_params["attitude_amp_pitch"] * np.sin(omega * t)  # 22.5°
+            # clip到±45°
+            roll = np.clip(roll, -self.max_attitude_angle, self.max_attitude_angle)
+            pitch = np.clip(pitch, -self.max_attitude_angle, self.max_attitude_angle)
+            yaw = np.clip(yaw, -self.max_attitude_angle, self.max_attitude_angle)
+            self.target_attitude = np.array([roll, pitch, yaw])
             
         elif self.trajectory_phase == 3:
-            # 阶段3：Roll恢复（90°→0°，线性插值）
-            progress = phase_elapsed / phase_durations[3]  # 0~1
-            progress = np.clip(progress, 0.0, 1.0)
-            roll_target = (1 - progress) * self.attitude_target_rad
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([roll_target, 0.0, 0.0])
+            # 阶段3：螺旋上升轨迹 (半径线性增加，高度线性增加，圆周运动)
+            t = phase_elapsed
+            t_total = self.trajectory_params["spiral_duration"]
+            r_start = self.trajectory_params["spiral_radius_start"]
+            r_end = self.trajectory_params["spiral_radius_end"]
+            omega = self.trajectory_params["spiral_omega"]
+            z_start = self.trajectory_params["spiral_z_start"]
+            z_end = self.trajectory_params["spiral_z_end"]
+            
+            # 半径线性插值
+            r = r_start + (r_end - r_start) * (t / t_total)
+            # 高度线性插值
+            z = z_start + (z_end - z_start) * (t / t_total)
+            
+            # 位置
+            x = r * np.cos(omega * t)
+            y = r * np.sin(omega * t)
+            self.target_position = np.array([x, y, z])
+            
+            # 速度（包含半径变化和高度变化的贡献）
+            dr_dt = (r_end - r_start) / t_total
+            dz_dt = (z_end - z_start) / t_total
+            vx = dr_dt * np.cos(omega * t) - r * omega * np.sin(omega * t)
+            vy = dr_dt * np.sin(omega * t) + r * omega * np.cos(omega * t)
+            vz = dz_dt
+            self.target_velocity = np.array([vx, vy, vz])
+            
+            # 加速度
+            d2r_dt2 = 0.0  # 匀加速半径变化
+            ax = d2r_dt2 * np.cos(omega * t) - 2 * dr_dt * omega * np.sin(omega * t) - r * omega**2 * np.cos(omega * t)
+            ay = d2r_dt2 * np.sin(omega * t) + 2 * dr_dt * omega * np.cos(omega * t) - r * omega**2 * np.sin(omega * t)
+            az = 0.0
+            self.target_acceleration = np.array([ax, ay, az])
+            
+            # 姿态随螺旋变化（≤30°）
+            yaw = np.arctan2(vy, vx) if np.sqrt(vx**2 + vy**2) > 0.01 else 0.0
+            roll = 0.0  # 0→30°
+            pitch = self.trajectory_params["attitude_amp_pitch"] * (r - r_start) / (r_end - r_start)  # 0→22.5°
+            # clip到±45°
+            roll = np.clip(roll, -self.max_attitude_angle, self.max_attitude_angle)
+            pitch = np.clip(pitch, -self.max_attitude_angle, self.max_attitude_angle)
+            yaw = np.clip(yaw, -self.max_attitude_angle, self.max_attitude_angle)
+            self.target_attitude = np.array([roll, pitch, yaw])
             
         elif self.trajectory_phase == 4:
-            # 阶段4：Pitch缓慢转动（0°→90°）
-            progress = phase_elapsed / phase_durations[4]  # 0~1
-            progress = np.clip(progress, 0.0, 1.0)
-            pitch_target = progress * self.attitude_target_rad
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([0.0, pitch_target, 0.0])
+            # 阶段4：返回原点（线性插值）
+            t = phase_elapsed
+            t_total = phase_durations[4]
+            progress = np.clip(t / t_total, 0.0, 1.0)
+            
+            # 当前位置到原点的插值
+            current_target_pos = self.target_position
+            target_pos = current_target_pos * (1 - progress)
+            self.target_position = target_pos
+            
+            # 速度和加速度线性减小到零
+            self.target_velocity = self.target_velocity * (1 - progress)
+            self.target_acceleration = np.zeros(3)
+            
+            # 姿态归零
+            self.target_attitude = self.target_attitude * (1 - progress)
+            self.target_attitude_rate = np.zeros(3)
             
         elif self.trajectory_phase == 5:
-            # 阶段5：Pitch保持（稳定在90°）
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([0.0, self.attitude_target_rad, 0.0])
+            # 阶段5：复杂姿态机动（严格≤45°）
+            t = phase_elapsed
+            omega = np.pi / phase_durations[5]  # 10秒完成一个周期
             
-        elif self.trajectory_phase == 6:
-            # 阶段6：Pitch恢复（90°→0°）
-            progress = phase_elapsed / phase_durations[6]  # 0~1
-            progress = np.clip(progress, 0.0, 1.0)
-            pitch_target = (1 - progress) * self.attitude_target_rad
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([0.0, pitch_target, 0.0])
+            # Roll最大45°，Pitch最大30°，Yaw最大45°
+            roll = self.trajectory_params["attitude_amp_yaw"] * np.sin(omega * t)  # 45°
+            pitch = self.trajectory_params["attitude_amp_roll"] * np.cos(omega * t)  # 30°
+            yaw = self.trajectory_params["attitude_amp_yaw"] * (2 * (t / phase_durations[5]) - 1)  # -45°到+45°
             
-        elif self.trajectory_phase == 7:
-            # 阶段7：Yaw缓慢转动（0°→90°）
-            progress = phase_elapsed / phase_durations[7]  # 0~1
-            progress = np.clip(progress, 0.0, 1.0)
-            yaw_target = progress * self.attitude_target_rad
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([0.0, 0.0, yaw_target])
+            # 最终clip到±45°（三重保险）
+            roll = np.clip(roll, -self.max_attitude_angle, self.max_attitude_angle)
+            pitch = np.clip(pitch, -self.max_attitude_angle, self.max_attitude_angle)
+            yaw = np.clip(yaw, -self.max_attitude_angle, self.max_attitude_angle)
             
-        elif self.trajectory_phase == 8:
-            # 阶段8：Yaw保持（稳定在90°）
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([0.0, 0.0, self.attitude_target_rad])
+            self.target_position = np.array([0.0, 0.0, 2.0])  # 保持位置
+            self.target_attitude = np.array([roll, pitch, yaw])
+            self.target_velocity = np.zeros(3)
+            self.target_acceleration = np.zeros(3)
             
-        elif self.trajectory_phase == 9:
-            # 阶段9：Yaw恢复（90°→0°）
-            progress = phase_elapsed / phase_durations[9]  # 0~1
-            progress = np.clip(progress, 0.0, 1.0)
-            yaw_target = (1 - progress) * self.attitude_target_rad
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([0.0, 0.0, yaw_target])
+            # 姿态角速度
+            self.target_attitude_rate = np.array([
+                self.trajectory_params["attitude_amp_yaw"] * omega * np.cos(omega * t),
+                -self.trajectory_params["attitude_amp_roll"] * omega * np.sin(omega * t),
+                self.trajectory_params["attitude_amp_yaw"] * 2 / phase_durations[5]
+            ])
             
         else:
-            # 阶段10：最终悬停（姿态归零，高度稳定）
+            # 阶段6：最终悬停
             self.target_position = np.array([0.0, 0.0, 2.0])
             self.target_attitude = np.array([0.0, 0.0, 0.0])
-        
-        # 速度/加速度归零（悬停状态，避免位置漂移）
-        self.target_velocity = np.zeros(3)
-        self.target_acceleration = np.zeros(3)
-        self.target_attitude_rate = np.zeros(3)
-        self.target_attitude_acceleration = np.zeros(3)
-    
+            self.target_velocity = np.zeros(3)
+            self.target_acceleration = np.zeros(3)
+            self.target_attitude_rate = np.zeros(3)
+            self.target_attitude_acceleration = np.zeros(3)
+
 
 def main():
-    """主函数 - 启动90°大角度姿态跟踪仿真"""
-    print("=== 倾转旋翼无人机90°大角度姿态跟踪仿真 ===")
-    print("核心优化：适配90°大角度，延长转动/保持/恢复时间，提高控制器增益")
-    print("轨迹逻辑：起飞悬停→Roll90°(保持5s)→恢复→Pitch90°(保持5s)→恢复→Yaw90°(保持5s)→恢复→悬停")
+    """主函数 - 启动45°限制复杂轨迹跟踪仿真"""
+    print("=== 倾转旋翼无人机复杂轨迹跟踪仿真（姿态≤±45°）===")
+    print("轨迹规划：起飞悬停→圆形轨迹→8字形轨迹→螺旋上升→返回原点→复杂姿态机动→悬停")
+    print("核心特性：姿态角严格限制≤±45°，位置轨迹复杂，平滑过渡")
     
     try:
         # 初始化控制器
         controller = HnuterController("hnuter201.xml")
         
-        # 初始目标（会被update_trajectory覆盖）
-        controller.target_position = np.array([0.0, 0.0, 2.0])
-        controller.target_attitude = np.array([0.0, 0.0, 0.0])
+        # 设置目标轨迹（简单悬停）
+        controller.target_position = np.array([0.0, 0.0, 2.0])  # 目标高度1.5米
+        controller.target_velocity = np.zeros(3)
+        controller.target_acceleration = np.zeros(3)
+        controller.target_attitude = np.array([0.8, 0.0, 0.0])  # 水平姿态
         
+        controller.target_attitude_rate = np.zeros(3)
+        controller.target_attitude_acceleration = np.zeros(3)
+
         # 启动 Viewer
         with viewer.launch_passive(controller.model, controller.data) as v:
             print("\n仿真启动：")
-            print(f"90°姿态跟踪日志文件路径: {controller.log_file}")
+            print(f"45°限制日志文件路径: {controller.log_file}")
             print("按 Ctrl+C 终止仿真")
             
             start_time = time.time()
             last_print_time = 0
-            print_interval = 1.0  # 90°大角度下延长打印间隔，便于观察
+            print_interval = 1.0
             count = 0
             
             try:
                 while v.is_running():
                     current_time = time.time() - start_time
                     
-                    # 启用轨迹更新（核心）
-                    controller.update_trajectory(current_time)
+                    # 更新复杂轨迹（核心）
+                    # controller.update_trajectory(current_time)
                     
                     # 更新控制
                     controller.update_control()
 
                     count += 1
                     if count % 1 == 0:
-                        # 仿真步进（保持与模型步长一致）
+                        # 仿真步进
                         mj.mj_step(controller.model, controller.data)
                     
                     # 同步可视化
@@ -828,7 +956,7 @@ def main():
                         controller.print_status()
                         last_print_time = current_time
 
-                    # 控制仿真速率（避免过快）
+                    # 控制仿真速率
                     time.sleep(0.001)
 
             except KeyboardInterrupt:

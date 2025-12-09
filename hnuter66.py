@@ -731,7 +731,6 @@ def main():
         controller.target_velocity = np.zeros(3)
         controller.target_acceleration = np.zeros(3)
         controller.target_attitude = np.array([0.0, 0.0, 0.0])  # 水平姿态
-        
         controller.target_attitude_rate = np.zeros(3)
         controller.target_attitude_acceleration = np.zeros(3)
         

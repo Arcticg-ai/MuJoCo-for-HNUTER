@@ -45,7 +45,6 @@
       <!-- 无人机机身（立方体） -->
       <geom name="body" type="box" size="0.15 0.1 0.05" pos="0 0 0" material="white" class="body"/>
       <inertial pos="0 0 0" mass="3.0" diaginertia="0.01 0.01 0.01"/>
-      
       <!-- 机腹四条腿 -->
       <body name="leg_front_right" pos="0.1 0.06 -0.05">
         <geom name="leg_fr" type="cylinder" fromto="0 0 0 0 0 -0.1" size="0.005" material="black" class="body"/>
@@ -72,12 +71,10 @@
         <!-- 机臂与机身连接的圆柱体 -->
         <geom name="arm_connector_r" type="cylinder" fromto="0 0 0 0 0.2 0" size="0.008" material="dark_gray" class="body"/>
         <inertial pos="0 0.1 0" mass="0.3" diaginertia="0.002 0.002 0.002"/>
-        
         <!-- 螺旋桨支撑柱（可倾转） -->
         <body name="right_prop_support" pos="0 0.2 0">
           <!-- 共轴双桨模块倾转关节（Roll轴） -->
           <joint name="prop_tilt_left" type="hinge" pos="0 0 0" axis="1 0 0" limited="true" range="-3.1 3.1"/>
-          
           <geom name="prop_support_r" type="cylinder" fromto="0 0 -0.05 0 0 0.05" size="0.01" material="dark_gray" class="body"/>
           <inertial pos="0 0 0" mass="0.1" diaginertia="0.001 0.001 0.001"/>
           
