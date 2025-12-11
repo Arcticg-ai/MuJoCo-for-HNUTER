@@ -22,8 +22,8 @@ class HnuterController:
         self.dt = self.model.opt.timestep
         self.gravity = 9.81
         self.mass = 4.2  # 主机身质量 + 旋翼机构质量 4.2kg
-        self.J = np.diag([0.08, 0.12, 0.1])  # 惯量矩阵
-        
+        # self.J = np.diag([0.08, 0.12, 0.1])  # 惯量矩阵
+        self.J = np.diag([0.02, 0.02, 0.02])  # 惯量矩阵
         # 旋翼布局参数
         self.l1 = 0.3  # 前旋翼组Y向距离(m)
         self.l2 = 0.5  # 尾部推进器X向距离(m)
@@ -42,8 +42,8 @@ class HnuterController:
 
         self.Kp = np.diag([6, 6, 6])  # 位置增益适度提高
         self.Dp = np.diag([5, 5, 5])  # 速度阻尼
-        self.KR = np.array([3, 1.2, 0.3])   # 姿态增益适度提高，增强大角度跟踪
-        self.Domega = np.array([0.9, 0.4, 0.6])  # 角速度阻尼适度提高
+        self.KR = np.array([3.0, 1.5, 1.2])   # 姿态增益适度提高，增强大角度跟踪
+        self.Domega = np.array([0.9, 0.4, 0.06])  # 角速度阻尼适度提高
 
         # 控制量
         self.f_c_body = np.zeros(3)  # 机体坐标系下的控制力
@@ -542,7 +542,7 @@ class HnuterController:
         self.theta2 = theta2
         
         # 存储控制输入向量
-        self.u = np.array([F1, F2, F3, alpha1, alpha2, theta2, theta2])
+        self.u = np.array([F1, F2, F3, alpha1, alpha2, theta1, theta2])
         
         return F1, F2, F3, alpha1, alpha2, theta1, theta2
     

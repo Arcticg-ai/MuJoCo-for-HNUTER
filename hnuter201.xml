@@ -182,7 +182,7 @@
     <motor name="motor_r_lower" site="motor_r_lower" gear="0 0 1 0 0 -0.006" forcerange="0 25" ctrlrange="0 25"/>
     <motor name="motor_l_upper" site="motor_l_upper" gear="0 0 1 0 0 0.006" forcerange="0 25" ctrlrange="0 25"/>
     <motor name="motor_l_lower" site="motor_l_lower" gear="0 0 1 0 0 -0.006" forcerange="0 25" ctrlrange="0 25"/>
-    <motor name="motor_rear_upper" site="motor_rear_upper" gear="0 0 1 0 0 0" forcerange="-10 10" ctrlrange="-10 10"/>
+    <motor name="motor_rear_upper" site="motor_rear_upper" gear="0 0 1 0 0 0.006" forcerange="-10 10" ctrlrange="-10 10"/>
 
     <!-- 机臂偏航控制（位置伺服） -->
     <position name="tilt_pitch_left" joint="arm_pitch_left" kp="15" kv="3" ctrllimited="true" ctrlrange="-1.7 1.7"/>
