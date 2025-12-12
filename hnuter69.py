@@ -563,7 +563,7 @@ class HnuterController:
         self.theta2 = theta2
         
         # 存储控制输入向量
-        self.u = np.array([F1, F2, F3, alpha1, alpha2, theta2, theta2])
+        self.u = np.array([F1, F2, F3, alpha1, alpha2, theta1, theta2])
         
         return F1, F2, F3, alpha1, alpha2, theta1, theta2
     

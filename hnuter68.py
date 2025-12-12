@@ -33,17 +33,21 @@ class HnuterController:
         self.l2 = 0.5  # 尾部推进器X向距离(m)
         self.k_d = 8.1e-8  # 尾部反扭矩系数
         
-        # 几何控制器增益（适配耦合补偿后的参数）
+        # 几何控制器增益（位置控制部分保留，姿态部分替换为论文参数）
         self.Kp = np.diag([8.0, 8.0, 8.0])    # 位置PD增益
         self.Dp = np.diag([6.0, 6.0, 6.0])    # 速度阻尼
-        self.KR = np.array([4.5, 15.0, 1.2])  # 姿态比例增益（增强耦合补偿）
-        self.Domega = np.array([1.2, 0.8, 0.1])  # 角速度阻尼
-        self.Ki_R = np.array([0.1, 0.1, 0.05])  # 姿态积分增益（抑制静差）
+        
+        # 论文中姿态控制器核心参数（来自文档：kR=3.07, kω=0.315）
+        self.kR = 3.07                        # 姿态误差增益
+        self.kω = 0.315                       # 角速度误差增益
+        self.alpha_rotor = 0.01               # 转子时间常数（一阶系统时间常数）
+        self.filter_cutoff = 40.0             # 低通滤波器截止频率(Hz)
+        self.filter_alpha = 1.0 - np.exp(-2 * np.pi * self.filter_cutoff * self.dt)  # 一阶低通系数
         
         # 控制量
         self.f_c_body = np.zeros(3)  # 机体坐标系下的控制力
         self.f_c_world = np.zeros(3)  # 世界坐标系下的控制力
-        self.tau_c = np.zeros(3)     # 控制力矩
+        self.tau_c = np.zeros(3)     # 控制力矩（论文中的Mcmd）
         self.u = np.zeros(7)         # 控制输入向量
 
         # 分配矩阵 (根据模型结构更新)
@@ -63,9 +67,10 @@ class HnuterController:
         self.target_position = np.array([0.0, 0.0, 0.3])  # 初始目标高度
         self.target_velocity = np.array([0.0, 0.0, 0.0])
         self.target_acceleration = np.array([0.0, 0.0, 0.0])
-        self.target_attitude = np.array([0.0, 0.0, 0.0])  # roll, pitch, yaw
-        self.target_attitude_rate = np.array([0.0, 0.0, 0.0])
-        self.target_attitude_acceleration = np.array([0.0, 0.0, 0.0])
+        self.target_attitude = np.array([0.0, 0.0, 0.0])  # roll, pitch, yaw (对应Rd)
+        self.target_angular_velocity = np.array([0.0, 0.0, 0.0])  # ωd (论文中的期望角速度)
+        self.target_angular_acceleration = np.array([0.0, 0.0, 0.0])  # ωd_dot (期望角加速度)
+        self.target_angular_jerk = np.array([0.0, 0.0, 0.0])  # ωd_ddot (期望角加加速度)
         
         # 倾转状态
         self.alpha1 = 0.0  # roll右倾角
@@ -95,14 +100,20 @@ class HnuterController:
         self.phase_start_time = 0.0  # 各阶段起始时间
         self.attitude_tolerance = 0.08  # 90°大角度下适度放宽tolerance
         
-        # 新增：姿态误差积分项（抑制静差）
-        self.attitude_error_integral = np.zeros(3)
+        # 论文控制器专用缓存
+        self.eR = np.zeros(3)  # 姿态误差（李群SO(3)）
+        self.eω = np.zeros(3)  # 角速度误差
+        self.eM = np.zeros(3)  # 力矩误差
+        self.Md = np.zeros(3)  # 期望力矩
+        self.Md_dot = np.zeros(3)  # 期望力矩导数
+        self.last_angular_velocity = np.zeros(3)  # 上一帧角速度（用于计算ω_dot）
+        self.filtered_eM = np.zeros(3)  # 滤波后的力矩误差
         
-        # 新增：动力学补偿缓存
-        self.coriolis_term = np.zeros(3)  # 科氏力/离心力项
+        # 动力学补偿缓存
+        self.coriolis_term = np.zeros(3)  # 科氏力/离心力项 ω×Jω
         self.gravity_torque = np.zeros(3) # 重力矩项
         
-        print("倾转旋翼控制器初始化完成（含耦合/科氏力补偿）")
+        print("倾转旋翼控制器初始化完成（基于论文Geometric Tracking Control）")
     
     def _print_model_diagnostics(self):
         """打印模型诊断信息"""
@@ -139,9 +150,9 @@ class HnuterController:
             os.makedirs('logs')
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_file = f'logs/drone_log_90deg_coupling_{timestamp}.csv'
+        self.log_file = f'logs/drone_log_90deg_geometric_{timestamp}.csv'
         
-        # 写入CSV表头（新增动力学补偿项）
+        # 写入CSV表头（新增论文控制器专用项）
         with open(self.log_file, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow([
@@ -153,20 +164,23 @@ class HnuterController:
                 'target_quat_w', 'target_quat_x', 'target_quat_y', 'target_quat_z',
                 'vel_x', 'vel_y', 'vel_z',
                 'angular_vel_x', 'angular_vel_y', 'angular_vel_z',
+                'target_angular_vel_x', 'target_angular_vel_y', 'target_angular_vel_z',
                 'accel_x', 'accel_y', 'accel_z',
                 'f_world_x', 'f_world_y', 'f_world_z',
                 'f_body_x', 'f_body_y', 'f_body_z',
                 'tau_x', 'tau_y', 'tau_z',
+                'Md_x', 'Md_y', 'Md_z',  # 期望力矩
+                'eR_x', 'eR_y', 'eR_z',  # 姿态误差
+                'eω_x', 'eω_y', 'eω_z',  # 角速度误差
                 'u1', 'u2', 'u3', 'u4', 'u5',
                 'T12', 'T34', 'T5',
                 'alpha1', 'alpha2', 'theta1', 'theta2',
                 'trajectory_phase',
-                'coriolis_x', 'coriolis_y', 'coriolis_z',  # 科氏力项
-                'gravity_tau_x', 'gravity_tau_y', 'gravity_tau_z',  # 重力矩
-                'attitude_error_int_x', 'attitude_error_int_y', 'attitude_error_int_z'  # 积分项
+                'coriolis_x', 'coriolis_y', 'coriolis_z',
+                'gravity_tau_x', 'gravity_tau_y', 'gravity_tau_z'
             ])
         
-        print(f"已创建耦合补偿日志文件: {self.log_file}")
+        print(f"已创建几何控制日志文件: {self.log_file}")
     
     def _get_actuator_ids(self):
         """获取执行器ID"""
@@ -257,6 +271,7 @@ class HnuterController:
             'rotation_matrix': np.eye(3),
             'velocity': np.zeros(3),
             'angular_velocity': np.zeros(3),
+            'angular_acceleration': np.zeros(3),  # 新增：角加速度
             'acceleration': np.zeros(3),
             'euler': np.zeros(3)
         }
@@ -272,9 +287,13 @@ class HnuterController:
             state['rotation_matrix'] = self._quat_to_rotation_matrix(state['quaternion'])
             state['euler'] = self._quat_to_euler(state['quaternion'])
             
-            # 计算机体坐标系下的线加速度（可选）
+            # 计算机体坐标系下的线加速度
             state['acceleration'] = (state['velocity'] - getattr(self, '_last_vel', np.zeros(3))) / self.dt
             self._last_vel = state['velocity'].copy()
+            
+            # 计算角加速度（数值微分）
+            state['angular_acceleration'] = (state['angular_velocity'] - self.last_angular_velocity) / self.dt
+            self.last_angular_velocity = state['angular_velocity'].copy()
             
             if np.any(np.isnan(state['position'])):
                 print("警告: 位置数据包含NaN，使用零值")
@@ -330,130 +349,8 @@ class HnuterController:
         
         return np.array([roll, pitch, yaw])
     
-    def _euler_to_quaternion(self, euler: np.ndarray) -> np.ndarray:
-        """欧拉角转四元数 [w, x, y, z]"""
-        roll, pitch, yaw = euler
-        
-        cy = math.cos(yaw * 0.5)
-        sy = math.sin(yaw * 0.5)
-        cp = math.cos(pitch * 0.5)
-        sp = math.sin(pitch * 0.5)
-        cr = math.cos(roll * 0.5)
-        sr = math.sin(roll * 0.5)
-        
-        w = cr * cp * cy + sr * sp * sy
-        x = sr * cp * cy - cr * sp * sy
-        y = cr * sp * cy + sr * cp * sy
-        z = cr * cp * sy - sr * sp * cy
-        
-        return np.array([w, x, y, z])
-    
-    def vee_map(self, S: np.ndarray) -> np.ndarray:
-        """反对称矩阵的vee映射"""
-        return np.array([S[2, 1], S[0, 2], S[1, 0]])
-
-    def hat_map(self, v: np.ndarray) -> np.ndarray:
-        """向量的hat映射（叉乘矩阵）"""
-        return np.array([
-            [0, -v[2], v[1]],
-            [v[2], 0, -v[0]],
-            [-v[1], v[0], 0]
-        ])
-    
-    def compute_coriolis_centrifugal(self, omega: np.ndarray) -> np.ndarray:
-        """
-        计算科氏力/离心力项：C(ω)ω = ω × (Jω)
-        输入：omega - 机体坐标系下角速度 (rad/s)
-        输出：科氏力/离心力力矩 (Nm)
-        """
-        J_omega = self.J @ omega
-        coriolis = np.cross(omega, J_omega)
-        self.coriolis_term = coriolis  # 缓存用于日志
-        return coriolis
-    
-    def compute_gravity_torque(self, R: np.ndarray) -> np.ndarray:
-        """
-        计算重力矩：τ_g = r_cm × (m*R^T*g_world)
-        输入：R - 世界→机体的旋转矩阵
-        输出：重力矩 (Nm)
-        """
-        g_world = np.array([0, 0, -self.gravity])  # 世界坐标系重力向量
-        g_body = R.T @ g_world                     # 机体坐标系重力向量
-        gravity_torque = np.cross(self.r_cm, self.mass * g_body)
-        self.gravity_torque = gravity_torque       # 缓存用于日志
-        return gravity_torque
-    
-    def compute_control_wrench(self, state: dict) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        计算完整的控制力和力矩（含耦合/科氏力补偿）
-        核心改进：
-        1. 平移动力学：mẍ = Rf + mg
-        2. 旋转动力学：Jω̇ + C(ω)ω + τ_g = τ
-        3. 带前馈补偿的PD+I姿态控制器
-        """
-        position = state['position']
-        velocity = state['velocity']
-        R = state['rotation_matrix']
-        omega = state['angular_velocity']
-        euler = state['euler']
-        
-        # ---------------------- 位置控制器（几何控制）----------------------
-        # 位置误差和速度误差
-        pos_error = self.target_position - position
-        vel_error = self.target_velocity - velocity
-        
-        # 期望加速度（PD控制 + 重力补偿）
-        acc_des = self.target_acceleration + self.Kp @ pos_error + self.Dp @ vel_error
-        f_c_world = self.mass * (acc_des + np.array([0, 0, self.gravity]))
-        
-        # ---------------------- 姿态控制器（含耦合补偿）----------------------
-        # 1. 期望旋转矩阵（跟踪位置控制器的力方向）
-        # 期望Z轴：世界坐标系下的期望推力方向（归一化）
-        z_des = f_c_world / np.linalg.norm(f_c_world) if np.linalg.norm(f_c_world) > 1e-6 else np.array([0, 0, 1])
-        x_c = np.array([1, 0, 0])  # 前向参考向量
-        y_des = np.cross(z_des, x_c)
-        y_des = y_des / np.linalg.norm(y_des) if np.linalg.norm(y_des) > 1e-6 else np.array([0, 1, 0])
-        x_des = np.cross(y_des, z_des)
-        R_des = np.column_stack([x_des, y_des, z_des])
-        
-        # 2. 叠加轨迹的目标姿态（90°大角度指令）
-        R_trajectory = self._euler_to_rotation_matrix(self.target_attitude)
-        R_des = R_des @ R_trajectory  # 组合位置和轨迹的期望姿态
-        
-        # 3. 姿态误差（大角度无奇异）
-        e_R = 0.5 * self.vee_map(R_des.T @ R - R.T @ R_des)
-        
-        # 4. 积分项（抑制静差，限幅防止积分饱和）
-        self.attitude_error_integral += e_R * self.dt
-        self.attitude_error_integral = np.clip(self.attitude_error_integral, -0.5, 0.5)
-        
-        # 5. 期望角速度（轨迹指令 + 误差反馈）
-        omega_des = self.target_attitude_rate
-        omega_error = omega - R.T @ R_des @ omega_des
-        
-        # 6. 期望角加速度（前馈 + 反馈）
-        omega_dot_des = self.target_attitude_acceleration - self.KR * e_R - self.Domega * omega_error - self.Ki_R * self.attitude_error_integral
-        
-        # 7. 动力学补偿（科氏力 + 重力矩）
-        coriolis = self.compute_coriolis_centrifugal(omega)
-        gravity_tau = self.compute_gravity_torque(R)
-        
-        # 8. 控制力矩（完整动力学补偿）
-        tau_c = self.J @ omega_dot_des + coriolis + gravity_tau
-        
-        # ---------------------- 坐标变换和输出 ----------------------
-        # 机体坐标系控制力（匹配期望姿态）
-        f_c_body = R.T @ f_c_world
-        
-        # 更新类成员变量
-        self.f_c_body = f_c_body
-        self.f_c_world = f_c_world
-        self.tau_c = tau_c
-        
-        return f_c_body, tau_c
-    
     def _euler_to_rotation_matrix(self, euler: np.ndarray) -> np.ndarray:
-        """将欧拉角转换为旋转矩阵（RPY顺序）"""
+        """将欧拉角转换为旋转矩阵（RPY顺序，对应论文中的Rd）"""
         roll, pitch, yaw = euler
         
         R_x = np.array([
@@ -475,7 +372,150 @@ class HnuterController:
         ])
         
         return R_z @ R_y @ R_x
+    
+    def vee_map(self, S: np.ndarray) -> np.ndarray:
+        """反对称矩阵的vee映射"""
+        return np.array([S[2, 1], S[0, 2], S[1, 0]])
 
+    def hat_map(self, v: np.ndarray) -> np.ndarray:
+        """向量的hat映射（叉乘矩阵）"""
+        return np.array([
+            [0, -v[2], v[1]],
+            [v[2], 0, -v[0]],
+            [-v[1], v[0], 0]
+        ])
+    
+    def compute_coriolis_centrifugal(self, omega: np.ndarray) -> np.ndarray:
+        """计算科氏力/离心力项：C(ω)ω = ω × (Jω)"""
+        J_omega = self.J @ omega
+        coriolis = np.cross(omega, J_omega)
+        self.coriolis_term = coriolis  # 缓存用于日志
+        return coriolis
+    
+    def compute_so3_attitude_error(self, R: np.ndarray, Rd: np.ndarray) -> np.ndarray:
+        """
+        计算论文中的SO(3)姿态误差eR：
+        eR = (1/(2*(1+tr(Rd^T R)))) * vee(Rd^T R - R^T Rd)
+        避免欧拉角奇异性，全局定义良好
+        """
+        RdT_R = Rd.T @ R
+        trace_term = np.trace(RdT_R)
+        # 数值稳定性保护：避免分母为0
+        denominator = 2 * (1 + trace_term + 1e-8)
+        skew_term = RdT_R - RdT_R.T
+        eR = self.vee_map(skew_term) / denominator
+        self.eR = eR
+        return eR
+    
+    def compute_angular_velocity_error(self, omega: np.ndarray, R: np.ndarray, Rd: np.ndarray, omega_d: np.ndarray) -> np.ndarray:
+        """
+        计算角速度误差eω：
+        eω = ω - R^T Rd ωd
+        """
+        eω = omega - R.T @ Rd @ omega_d
+        self.eω = eω
+        return eω
+    
+    def compute_desired_torque_Md(self, state: dict) -> np.ndarray:
+        """
+        计算论文中的期望力矩Md（公式18）：
+        Md = -kR eR - kω eω + ω×Jω - J( [ω]^∧ R^T Rd ωd - R^T Rd ωd_dot )
+        """
+        R = state['rotation_matrix']
+        omega = state['angular_velocity']
+        omega_dot = state['angular_acceleration']
+        Rd = self._euler_to_rotation_matrix(self.target_attitude)
+        omega_d = self.target_angular_velocity
+        omega_d_dot = self.target_angular_acceleration
+        
+        # 1. 计算姿态误差和角速度误差
+        eR = self.compute_so3_attitude_error(R, Rd)
+        eω = self.compute_angular_velocity_error(omega, R, Rd, omega_d)
+        
+        # 2. 科氏力项
+        coriolis = self.compute_coriolis_centrifugal(omega)
+        
+        # 3. 计算J([ω]^∧ R^T Rd ωd - R^T Rd ωd_dot)
+        omega_hat = self.hat_map(omega)
+        RdT_R_omega_d = R.T @ Rd @ omega_d
+        term1 = omega_hat @ RdT_R_omega_d
+        term2 = R.T @ Rd @ omega_d_dot
+        J_term = self.J @ (term1 - term2)
+        
+        # 4. 计算Md
+        Md = -self.kR * eR - self.kω * eω + coriolis - J_term
+        self.Md = Md
+        
+        # 5. 力矩误差eM滤波（论文中的40Hz低通滤波）
+        # 估算实际力矩M = Jω_dot + ω×Jω（从动力学方程）
+        M_actual = self.J @ omega_dot + coriolis
+        self.eM = M_actual - Md
+        # 一阶低通滤波
+        self.filtered_eM = self.filter_alpha * self.eM + (1 - self.filter_alpha) * self.filtered_eM
+        
+        return Md
+    
+    def compute_Md_derivative(self, state: dict) -> np.ndarray:
+        """
+        计算Md的导数Md_dot（论文简化形式公式44）：
+        M˙d ≈ -0.5 kR eω - kω J^{-1} eM + ω×Jω_dot + ω_dot×Jω + J ωd_ddot
+        """
+        omega = state['angular_velocity']
+        omega_dot = state['angular_acceleration']
+        omega_d_ddot = self.target_angular_jerk
+        
+        # 1. 各项计算
+        term1 = -0.5 * self.kR * self.eω
+        term2 = -self.kω * self.J_inv @ self.filtered_eM
+        term3 = np.cross(omega, self.J @ omega_dot)
+        term4 = np.cross(omega_dot, self.J @ omega)
+        term5 = self.J @ omega_d_ddot
+        
+        Md_dot = term1 + term2 + term3 + term4 + term5
+        self.Md_dot = Md_dot
+        return Md_dot
+    
+    def compute_control_wrench(self, state: dict) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        完整的控制力和力矩计算（位置控制保留，姿态控制替换为论文算法）
+        最终控制力矩Mcmd = Md + α * Md_dot（公式19）
+        """
+        position = state['position']
+        velocity = state['velocity']
+        R = state['rotation_matrix']
+        omega = state['angular_velocity']
+        
+        # ---------------------- 位置控制器（保留原有几何控制）----------------------
+        # 位置误差和速度误差
+        pos_error = self.target_position - position
+        vel_error = self.target_velocity - velocity
+        
+        # 期望加速度（PD控制 + 重力补偿）
+        acc_des = self.target_acceleration + self.Kp @ pos_error + self.Dp @ vel_error
+        f_c_world = self.mass * (acc_des + np.array([0, 0, self.gravity]))
+        
+        # ---------------------- 姿态控制器（论文中的Geometric Tracking Control）----------------------
+        # 1. 计算期望力矩Md
+        Md = self.compute_desired_torque_Md(state)
+        
+        # 2. 计算Md的导数Md_dot（简化形式）
+        Md_dot = self.compute_Md_derivative(state)
+        
+        # 3. 最终指令力矩Mcmd = Md + α * Md_dot（补偿转子动态）
+        tau_c = Md + self.alpha_rotor * Md_dot
+        
+        # ---------------------- 坐标变换和输出 ----------------------
+        # 机体坐标系控制力（匹配期望姿态）
+        Rd = self._euler_to_rotation_matrix(self.target_attitude)
+        f_c_body = R.T @ f_c_world
+        
+        # 更新类成员变量
+        self.f_c_body = f_c_body
+        self.f_c_world = f_c_world
+        self.tau_c = tau_c
+        
+        return f_c_body, tau_c
+    
     def inverse_nonlinear_mapping(self, W):
         """修正后的代数逆映射函数（适配90°大角度）"""
         # 尾部推力 (由俯仰力矩确定)
@@ -626,7 +666,7 @@ class HnuterController:
             # 获取当前状态
             state = self.get_state()
 
-            # 计算控制力矩和力（核心：含耦合补偿）
+            # 计算控制力矩和力（核心：论文的几何姿态控制器）
             f_c_body, tau_c = self.compute_control_wrench(state)
             
             # 分配执行器命令
@@ -635,7 +675,7 @@ class HnuterController:
             # 应用控制
             self.set_actuators(T12, T34, T5, alpha1, alpha2, theta1, theta2)
             
-            # 记录状态（含动力学补偿项）
+            # 记录状态（含论文控制器专用项）
             self.log_status(state)
             
             return True
@@ -644,7 +684,7 @@ class HnuterController:
             return False
     
     def log_status(self, state: dict):
-        """记录状态到日志文件（新增动力学补偿项）"""
+        """记录状态到日志文件（新增论文控制器专用项）"""
         timestamp = time.time()
         position = state.get('position', np.zeros(3))
         velocity = state.get('velocity', np.zeros(3))
@@ -666,21 +706,42 @@ class HnuterController:
                 target_quat[0], target_quat[1], target_quat[2], target_quat[3],
                 velocity[0], velocity[1], velocity[2],
                 angular_velocity[0], angular_velocity[1], angular_velocity[2],
+                self.target_angular_velocity[0], self.target_angular_velocity[1], self.target_angular_velocity[2],
                 acceleration[0], acceleration[1], acceleration[2],
                 self.f_c_world[0], self.f_c_world[1], self.f_c_world[2],
                 self.f_c_body[0], self.f_c_body[1], self.f_c_body[2],
                 self.tau_c[0], self.tau_c[1], self.tau_c[2],
+                self.Md[0], self.Md[1], self.Md[2],
+                self.eR[0], self.eR[1], self.eR[2],
+                self.eω[0], self.eω[1], self.eω[2],
                 self.u[0], self.u[1], self.u[2], self.u[3], self.u[4],
                 self.T12, self.T34, self.T5,
                 self.alpha1, self.alpha2, self.theta1, self.theta2,
                 self.trajectory_phase,
                 self.coriolis_term[0], self.coriolis_term[1], self.coriolis_term[2],
-                self.gravity_torque[0], self.gravity_torque[1], self.gravity_torque[2],
-                self.attitude_error_integral[0], self.attitude_error_integral[1], self.attitude_error_integral[2]
+                self.gravity_torque[0], self.gravity_torque[1], self.gravity_torque[2]
             ])
     
+    def _euler_to_quaternion(self, euler: np.ndarray) -> np.ndarray:
+        """欧拉角转四元数 [w, x, y, z]"""
+        roll, pitch, yaw = euler
+        
+        cy = math.cos(yaw * 0.5)
+        sy = math.sin(yaw * 0.5)
+        cp = math.cos(pitch * 0.5)
+        sp = math.sin(pitch * 0.5)
+        cr = math.cos(roll * 0.5)
+        sr = math.sin(roll * 0.5)
+        
+        w = cr * cp * cy + sr * sp * sy
+        x = sr * cp * cy - cr * sp * sy
+        y = cr * sp * cy + sr * cp * sy
+        z = cr * cp * sy - sr * sp * cy
+        
+        return np.array([w, x, y, z])
+    
     def print_status(self):
-        """打印当前状态信息（含耦合补偿项）"""
+        """打印当前状态信息（含论文控制器专用项）"""
         try:
             state = self.get_state()
             pos = state['position']
@@ -713,16 +774,17 @@ class HnuterController:
             print(f"姿态: Roll={euler_deg[0]:.2f}°, Pitch={euler_deg[1]:.2f}°, Yaw={euler_deg[2]:.2f}°")  
             print(f"目标姿态: Roll={target_euler_deg[0]:.1f}°, Pitch={target_euler_deg[1]:.1f}°, Yaw={target_euler_deg[2]:.1f}°") 
             print(f"角速度: Roll={np.degrees(state['angular_velocity'][0]):.2f}°/s, Pitch={np.degrees(state['angular_velocity'][1]):.2f}°/s, Yaw={np.degrees(state['angular_velocity'][2]):.2f}°/s")
-            print(f"控制力矩: X={self.tau_c[0]:.2f}Nm, Y={self.tau_c[1]:.2f}Nm, Z={self.tau_c[2]:.2f}Nm")
-            print(f"科氏力项: X={self.coriolis_term[0]:.2f}Nm, Y={self.coriolis_term[1]:.2f}Nm, Z={self.coriolis_term[2]:.2f}Nm")
-            print(f"重力矩项: X={self.gravity_torque[0]:.2f}Nm, Y={self.gravity_torque[1]:.2f}Nm, Z={self.gravity_torque[2]:.2f}Nm")
+            print(f"控制力矩(Mcmd): X={self.tau_c[0]:.2f}Nm, Y={self.tau_c[1]:.2f}Nm, Z={self.tau_c[2]:.2f}Nm")
+            print(f"期望力矩(Md): X={self.Md[0]:.2f}Nm, Y={self.Md[1]:.2f}Nm, Z={self.Md[2]:.2f}Nm")
+            print(f"姿态误差(eR): X={self.eR[0]:.4f}, Y={self.eR[1]:.4f}, Z={self.eR[2]:.4f}")
+            print(f"角速度误差(eω): X={self.eω[0]:.4f}, Y={self.eω[1]:.4f}, Z={self.eω[2]:.4f}")
             print(f"执行器状态: T12={self.T12:.2f}N, T34={self.T34:.2f}N, T5={self.T5:.2f}N, α1={math.degrees(self.alpha1):.2f}°, α2={math.degrees(self.alpha2):.2f}°, θ1={math.degrees(self.theta1):.2f}°, θ2={math.degrees(self.theta2):.2f}°")
             print("--------------------------------------------------")
         except Exception as e:
             print(f"状态打印失败: {e}")
     
     def update_trajectory(self, current_time: float):
-        """90°大角度轨迹发布器"""
+        """90°大角度轨迹发布器（适配论文控制器的目标角速度/角加速度）"""
         # 初始化阶段起始时间
         if self.trajectory_phase == 0 and self.phase_start_time == 0.0:
             self.phase_start_time = current_time
@@ -751,80 +813,106 @@ class HnuterController:
             self.phase_start_time = current_time
             print(f"\n🔄 轨迹阶段切换: {self.trajectory_phase-1} → {self.trajectory_phase}")
         
-        # 各阶段轨迹逻辑
+        # 各阶段轨迹逻辑（新增目标角速度/角加速度）
         if self.trajectory_phase == 0:
             self.target_position = np.array([0.0, 0.0, 2.0])
             self.target_attitude = np.array([0.0, 0.0, 0.0])
+            self.target_angular_velocity = np.zeros(3)
+            self.target_angular_acceleration = np.zeros(3)
             
         elif self.trajectory_phase == 1:
             progress = phase_elapsed / phase_durations[1]
             progress = np.clip(progress, 0.0, 1.0)
             roll_target = progress * self.attitude_target_rad
+            # 目标角速度：线性增加到0.5rad/s，然后保持
+            roll_vel_target = min(0.5, progress * self.attitude_target_rad / phase_durations[1] * 2)
             self.target_position = np.array([0.0, 0.0, 2.0])
             self.target_attitude = np.array([roll_target, 0.0, 0.0])
+            self.target_angular_velocity = np.array([roll_vel_target, 0.0, 0.0])
+            self.target_angular_acceleration = np.array([0.0 if progress > 0.5 else 0.1, 0.0, 0.0])
             
         elif self.trajectory_phase == 2:
             self.target_position = np.array([0.0, 0.0, 2.0])
             self.target_attitude = np.array([self.attitude_target_rad, 0.0, 0.0])
+            self.target_angular_velocity = np.zeros(3)
+            self.target_angular_acceleration = np.zeros(3)
             
         elif self.trajectory_phase == 3:
             progress = phase_elapsed / phase_durations[3]
             progress = np.clip(progress, 0.0, 1.0)
             roll_target = (1 - progress) * self.attitude_target_rad
+            roll_vel_target = -min(0.5, progress * self.attitude_target_rad / phase_durations[3] * 2)
             self.target_position = np.array([0.0, 0.0, 2.0])
             self.target_attitude = np.array([roll_target, 0.0, 0.0])
+            self.target_angular_velocity = np.array([roll_vel_target, 0.0, 0.0])
+            self.target_angular_acceleration = np.array([0.0 if progress > 0.5 else -0.1, 0.0, 0.0])
             
         elif self.trajectory_phase == 4:
             progress = phase_elapsed / phase_durations[4]
             progress = np.clip(progress, 0.0, 1.0)
             pitch_target = progress * self.attitude_target_rad
+            pitch_vel_target = min(0.5, progress * self.attitude_target_rad / phase_durations[4] * 2)
             self.target_position = np.array([0.0, 0.0, 2.0])
             self.target_attitude = np.array([0.0, pitch_target, 0.0])
+            self.target_angular_velocity = np.array([0.0, pitch_vel_target, 0.0])
+            self.target_angular_acceleration = np.array([0.0, 0.0 if progress > 0.5 else 0.1, 0.0])
             
         elif self.trajectory_phase == 5:
             self.target_position = np.array([0.0, 0.0, 2.0])
             self.target_attitude = np.array([0.0, self.attitude_target_rad, 0.0])
+            self.target_angular_velocity = np.zeros(3)
+            self.target_angular_acceleration = np.zeros(3)
             
         elif self.trajectory_phase == 6:
             progress = phase_elapsed / phase_durations[6]
             progress = np.clip(progress, 0.0, 1.0)
             pitch_target = (1 - progress) * self.attitude_target_rad
+            pitch_vel_target = -min(0.5, progress * self.attitude_target_rad / phase_durations[6] * 2)
             self.target_position = np.array([0.0, 0.0, 2.0])
             self.target_attitude = np.array([0.0, pitch_target, 0.0])
+            self.target_angular_velocity = np.array([0.0, pitch_vel_target, 0.0])
+            self.target_angular_acceleration = np.array([0.0, 0.0 if progress > 0.5 else -0.1, 0.0])
             
         elif self.trajectory_phase == 7:
             progress = phase_elapsed / phase_durations[7]
             progress = np.clip(progress, 0.0, 1.0)
             yaw_target = progress * self.attitude_target_rad
+            yaw_vel_target = min(0.5, progress * self.attitude_target_rad / phase_durations[7] * 2)
             self.target_position = np.array([0.0, 0.0, 2.0])
             self.target_attitude = np.array([0.0, 0.0, yaw_target])
+            self.target_angular_velocity = np.array([0.0, 0.0, yaw_vel_target])
+            self.target_angular_acceleration = np.array([0.0, 0.0, 0.0 if progress > 0.5 else 0.1])
             
         elif self.trajectory_phase == 8:
             self.target_position = np.array([0.0, 0.0, 2.0])
             self.target_attitude = np.array([0.0, 0.0, self.attitude_target_rad])
+            self.target_angular_velocity = np.zeros(3)
+            self.target_angular_acceleration = np.zeros(3)
             
         elif self.trajectory_phase == 9:
             progress = phase_elapsed / phase_durations[9]
             progress = np.clip(progress, 0.0, 1.0)
             yaw_target = (1 - progress) * self.attitude_target_rad
+            yaw_vel_target = -min(0.5, progress * self.attitude_target_rad / phase_durations[9] * 2)
             self.target_position = np.array([0.0, 0.0, 2.0])
             self.target_attitude = np.array([0.0, 0.0, yaw_target])
+            self.target_angular_velocity = np.array([0.0, 0.0, yaw_vel_target])
+            self.target_angular_acceleration = np.array([0.0, 0.0, 0.0 if progress > 0.5 else -0.1])
             
         else:
             self.target_position = np.array([0.0, 0.0, 2.0])
             self.target_attitude = np.array([0.0, 0.0, 0.0])
+            self.target_angular_velocity = np.zeros(3)
+            self.target_angular_acceleration = np.zeros(3)
         
-        # 速度/加速度归零
-        self.target_velocity = np.zeros(3)
-        self.target_acceleration = np.zeros(3)
-        self.target_attitude_rate = np.zeros(3)
-        self.target_attitude_acceleration = np.zeros(3)
+        # 期望角加加速度归零（简化）
+        self.target_angular_jerk = np.zeros(3)
     
 
 def main():
-    """主函数 - 启动90°大角度姿态跟踪仿真"""
-    print("=== 倾转旋翼无人机90°大角度姿态跟踪仿真（含耦合/科氏力补偿）===")
-    print("核心优化：完整刚体动力学补偿（科氏力/离心力/重力矩）+ PD+I姿态控制")
+    """主函数 - 启动90°大角度姿态跟踪仿真（论文几何控制器）"""
+    print("=== 倾转旋翼无人机90°大角度姿态跟踪仿真（Geometric Tracking Control）===")
+    print("核心算法：《Geometric Tracking Control of Omnidirectional Multirotors for Aggressive Maneuvers》")
     print("轨迹逻辑：起飞悬停→Roll90°(保持5s)→恢复→Pitch90°(保持5s)→恢复→Yaw90°(保持5s)→恢复→悬停")
     
     try:
@@ -838,7 +926,7 @@ def main():
         # 启动 Viewer
         with viewer.launch_passive(controller.model, controller.data) as v:
             print("\n仿真启动：")
-            print(f"耦合补偿日志文件路径: {controller.log_file}")
+            print(f"几何控制日志文件路径: {controller.log_file}")
             print("按 Ctrl+C 终止仿真")
             
             start_time = time.time()
@@ -850,10 +938,10 @@ def main():
                 while v.is_running():
                     current_time = time.time() - start_time
                     
-                    # 更新轨迹
+                    # 更新轨迹（包含目标角速度/角加速度）
                     controller.update_trajectory(current_time)
                     
-                    # 更新控制
+                    # 更新控制（论文的几何姿态控制器）
                     controller.update_control()
 
                     count += 1
@@ -878,6 +966,8 @@ def main():
             final_state = controller.get_state()
             print(f"最终位置: ({final_state['position'][0]:.2f}, {final_state['position'][1]:.2f}, {final_state['position'][2]:.2f})m")
             print(f"最终姿态: Roll={np.degrees(final_state['euler'][0]):.2f}°, Pitch={np.degrees(final_state['euler'][1]):.2f}°, Yaw={np.degrees(final_state['euler'][2]):.2f}°")
+            print(f"最终姿态误差(eR): {controller.eR}")
+            print(f"最终角速度误差(eω): {controller.eω}")
 
     except Exception as e:
         print(f"仿真主循环失败: {e}")
