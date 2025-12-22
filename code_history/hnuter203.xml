@@ -1,23 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <mujoco>
   <compiler angle="radian" inertiafromgeom="false"/>
-  <option timestep="0.001" iterations="100" tolerance="1e-10" integrator="RK4"/>
+  <option timestep="0.01" iterations="100" tolerance="1e-10" integrator="RK4"/>
   
-  <!-- 全局默认参数 -->
+  <!-- 修正：将所有default定义合并到同一个顶级default块内 -->
   <default>
-    <geom contype="1" conaffinity="1" solimp="0.9 0.95 0.001" solref="0.02 1"/>
+    <!-- 全局默认参数：所有几何体默认设置 -->
+    <!-- <geom contype="1" conaffinity="1" solimp="0.9 0.95 0.001" solref="0.02 1"/> -->
     <joint limited="true" damping="0.1" armature="0.1"/>
-  </default>
-  
-  <default>
-    <!-- 定义碰撞类别 -->
-
-      <!-- 视觉几何体默认参数：不参与碰撞 -->
-    <!-- 机体类别：contype=2, conaffinity=1，只与环境（contype=1）碰撞 -->
     
+    <!-- 机体部件类别：contype=2, conaffinity=1，只与环境（contype=1）碰撞 -->
     <default class="body">
       <geom contype="2" conaffinity="1"/>
     </default>
+    
     <!-- 螺旋桨类别：contype=4, conaffinity=1，只与环境（contype=1）碰撞 -->
     <default class="propeller">
       <geom contype="4" conaffinity="1"/>
@@ -44,7 +40,8 @@
       <freejoint/>
       <!-- 无人机机身（立方体） -->
       <geom name="body" type="box" size="0.15 0.1 0.05" pos="0 0 0" material="white" class="body"/>
-      <inertial pos="0 0 0" mass="3.0" diaginertia="0.01 0.01 0.01"/>
+      <inertial pos="0 0 0" mass="3.0" diaginertia="0.1 0.1 0.1"/>
+      
       <!-- 机腹四条腿 -->
       <body name="leg_front_right" pos="0.1 0.06 -0.05">
         <geom name="leg_fr" type="cylinder" fromto="0 0 0 0 0 -0.1" size="0.005" material="black" class="body"/>
@@ -71,10 +68,12 @@
         <!-- 机臂与机身连接的圆柱体 -->
         <geom name="arm_connector_r" type="cylinder" fromto="0 0 0 0 0.2 0" size="0.008" material="dark_gray" class="body"/>
         <inertial pos="0 0.1 0" mass="0.3" diaginertia="0.002 0.002 0.002"/>
+        
         <!-- 螺旋桨支撑柱（可倾转） -->
         <body name="right_prop_support" pos="0 0.2 0">
           <!-- 共轴双桨模块倾转关节（Roll轴） -->
           <joint name="prop_tilt_left" type="hinge" pos="0 0 0" axis="1 0 0" limited="true" range="-3.1 3.1"/>
+          
           <geom name="prop_support_r" type="cylinder" fromto="0 0 -0.05 0 0 0.05" size="0.01" material="dark_gray" class="body"/>
           <inertial pos="0 0 0" mass="0.1" diaginertia="0.001 0.001 0.001"/>
           
@@ -178,26 +177,19 @@
   <!-- 执行器定义 -->
   <actuator>
     <!-- 螺旋桨转速控制 -->
-    <motor name="motor_r_upper" site="motor_r_upper" gear="0 0 1 0 0 -0.006" forcerange="0 25" ctrlrange="0 25"/>
-    <motor name="motor_r_lower" site="motor_r_lower" gear="0 0 1 0 0 0.006" forcerange="0 25" ctrlrange="0 25"/>
-    <motor name="motor_l_upper" site="motor_l_upper" gear="0 0 1 0 0 0.006" forcerange="0 25" ctrlrange="0 25"/>
-    <motor name="motor_l_lower" site="motor_l_lower" gear="0 0 1 0 0 -0.006" forcerange="0 25" ctrlrange="0 25"/>
-    <motor name="motor_rear_upper" site="motor_rear_upper" gear="0 0 1 0 0 0.006" forcerange="-10 10" ctrlrange="-10 10"/>
+    <motor name="motor_r_upper" site="motor_r_upper" gear="0 0 1 0 0 -0.006" forcerange="0 25" ctrlrange="0 250"/>
+    <motor name="motor_r_lower" site="motor_r_lower" gear="0 0 1 0 0 0.006" forcerange="0 25" ctrlrange="0 250"/>
+    <motor name="motor_l_upper" site="motor_l_upper" gear="0 0 1 0 0 -0.006" forcerange="0 25" ctrlrange="0 250"/>
+    <motor name="motor_l_lower" site="motor_l_lower" gear="0 0 1 0 0 0.006" forcerange="0 25" ctrlrange="0 250"/>
+    <motor name="motor_rear_upper" site="motor_rear_upper" gear="0 0 1 0 0 0.006" forcerange="-10 10" ctrlrange="-100 100"/>
 
     <!-- 机臂偏航控制（位置伺服） -->
-    <!-- <position name="tilt_pitch_left" joint="arm_pitch_left" kp="15" kv="3" ctrllimited="true" ctrlrange="-3.0 3.0"/> -->
-    <!-- <position name="tilt_pitch_right" joint="arm_pitch_right" kp="15" kv="3" ctrllimited="true" ctrlrange="-3.0 3.0"/> -->
+    <position name="tilt_pitch_left" joint="arm_pitch_left" kp="15" kv="3"/>
+    <position name="tilt_pitch_right" joint="arm_pitch_right" kp="15" kv="3"/>
     
     <!-- 螺旋桨倾转控制（位置伺服） -->
-    <!-- <position name="tilt_roll_left" joint="prop_tilt_left" kp="15" kv="3" ctrllimited="true" ctrlrange="-3.0 3.0"/> -->
-    <!-- <position name="tilt_roll_right" joint="prop_tilt_right" kp="15" kv="3" ctrllimited="true" ctrlrange="-3.0 3.0"/> -->
-        <!-- 机臂偏航控制（位置伺服） -->
-    <position name="tilt_pitch_left" joint="arm_pitch_left" kp="10" kv="2" ctrllimited="true" ctrlrange="-3.0 3.0"/>
-    <position name="tilt_pitch_right" joint="arm_pitch_right" kp="10" kv="2" ctrllimited="true" ctrlrange="-3.0 3.0"/>
-    
-    <!-- 螺旋桨倾转控制（位置伺服） -->
-    <position name="tilt_roll_left" joint="prop_tilt_left" kp="10" kv="2" ctrllimited="true" ctrlrange="-3.0 3.0"/>
-    <position name="tilt_roll_right" joint="prop_tilt_right" kp="10" kv="2" ctrllimited="true" ctrlrange="-3.0 3.0"/>
+    <position name="tilt_roll_left" joint="prop_tilt_left" kp="15" kv="3"/>
+    <position name="tilt_roll_right" joint="prop_tilt_right" kp="15" kv="3"/>
   </actuator>
   
   <sensor>

@@ -49,11 +49,11 @@ class HnuterController:
         self.attitude_noise_std = 0.001  # 姿态测量噪声标准差
         
         # 外部扰动参数（对齐Matlab）
-        self.disturbance_torque_std = 0.002  # 随机扰动标准差
+        self.disturbance_torque_std = 0.000  # 随机扰动标准差
         self.periodic_disturbance_freq = 0.5  # 周期性扰动频率 (Hz)
-        self.periodic_disturbance_amp = 0.001  # 周期性扰动幅度
+        self.periodic_disturbance_amp = 0.00  # 周期性扰动幅度
         self.pulse_disturbance_iter = [150, 300]  # 脉冲扰动迭代步
-        self.pulse_disturbance_val = np.array([0.005, -0.0025, 0.0015])  # 脉冲扰动值
+        self.pulse_disturbance_val = np.array([0.00, -0.00, 0.00])  # 脉冲扰动值
         
         # 控制量
         self.f_c_body = np.zeros(3)  
