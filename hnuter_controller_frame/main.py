@@ -9,14 +9,11 @@ from trajectory_planner import TrajectoryPlanner
 
 
 def main():
-    """主函数 - 启动几何解耦控制仿真"""
-    print("=== 倾转旋翼无人机几何解耦控制仿真 ===")
-    print("核心优化：基于倾转预测的几何解耦控制方案")
-    print("方案特点：")
-    print("  1. 虚拟坐标系解耦快慢响应轴")
-    print("  2. 基于俯仰角的增益调度")
-    print("  3. 舵机动态延迟补偿")
-    print("  4. 自适应轴类型切换")
+    """主函数 - 启动90°大角度姿态跟踪仿真"""
+    print("=== 倾转旋翼无人机90°大角度姿态跟踪仿真 ===")
+    print("核心优化：适配90°大角度，延长转动/保持/恢复时间，提高控制器增益")
+    print("安全限制：俯仰角超过70°时自动置零横滚/偏航力矩")
+    print("轨迹逻辑：起飞悬停→Roll90°(保持5s)→恢复→Pitch90°(保持5s)→恢复→Yaw90°(保持5s)→恢复→悬停")
     
     try:
         # 初始化仿真框架
@@ -76,7 +73,7 @@ def main():
                         
                         # 将目标状态传递给控制器
                         controller.target_position = target_state['target_position']
-                        controller.target_attitude = target_state['target_attitude']
+                        controller.target_rotation_matrix = target_state['target_rotation_matrix']
                         controller.target_velocity = target_state['target_velocity']
                         controller.target_acceleration = target_state['target_acceleration']
                         controller.target_attitude_rate = target_state['target_attitude_rate']
@@ -112,6 +109,26 @@ def main():
             # 打印仿真总结
             final_state = sim.get_state()
             logger.print_summary(final_state)
+            
+            # 生成飞行数据分析图
+            print("\n=== 生成飞行数据分析图 ===")
+            try:
+                from plotter import find_latest_log_file, load_log_data, plot_drone_data_and_save
+                
+                # 获取最新日志文件
+                log_file = find_latest_log_file()
+                
+                # 加载日志数据
+                df = load_log_data(log_file)
+                
+                # 生成并保存绘图
+                plot_drone_data_and_save(df)
+                print("飞行数据分析图生成成功!")
+            except Exception as e:
+                print(f"生成飞行数据分析图失败: {e}")
+                import traceback
+                traceback.print_exc()
+            
             print("仿真结束")
     
     except Exception as e:

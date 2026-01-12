@@ -118,6 +118,16 @@ def rotation_x(angle: float) -> np.ndarray:
     ])
 
 
+def rotation_y(angle: float) -> np.ndarray:
+    """绕Y轴旋转矩阵"""
+    c, s = np.cos(angle), np.sin(angle)
+    return np.array([
+        [c, 0, s],
+        [0, 1, 0],
+        [-s, 0, c]
+    ])
+
+
 def rotation_z(angle: float) -> np.ndarray:
     """绕Z轴旋转矩阵"""
     c, s = np.cos(angle), np.sin(angle)
@@ -126,6 +136,127 @@ def rotation_z(angle: float) -> np.ndarray:
         [s, c, 0],
         [0, 0, 1]
     ])
+
+
+# 旋转矩阵的别名，方便使用
+def rotation_matrix_roll(angle: float) -> np.ndarray:
+    """Roll轴旋转矩阵（绕X轴）"""
+    return rotation_x(angle)
+
+
+def rotation_matrix_pitch(angle: float) -> np.ndarray:
+    """Pitch轴旋转矩阵（绕Y轴）"""
+    return rotation_y(angle)
+
+
+def rotation_matrix_yaw(angle: float) -> np.ndarray:
+    """Yaw轴旋转矩阵（绕Z轴）"""
+    return rotation_z(angle)
+
+
+def slerp(R1: np.ndarray, R2: np.ndarray, t: float) -> np.ndarray:
+    """球面线性插值（Slerp）实现
+    
+    Args:
+        R1: 起始旋转矩阵
+        R2: 目标旋转矩阵
+        t: 插值因子，范围[0, 1]
+    
+    Returns:
+        插值后的旋转矩阵
+    """
+    # 将旋转矩阵转换为四元数
+    def matrix_to_quaternion(R):
+        """旋转矩阵转四元数 [w, x, y, z]"""
+        tr = R[0, 0] + R[1, 1] + R[2, 2]
+        
+        if tr > 0:
+            S = np.sqrt(tr + 1.0) * 2
+            w = 0.25 * S
+            x = (R[2, 1] - R[1, 2]) / S
+            y = (R[0, 2] - R[2, 0]) / S
+            z = (R[1, 0] - R[0, 1]) / S
+        elif (R[0, 0] > R[1, 1]) and (R[0, 0] > R[2, 2]):
+            S = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2
+            w = (R[2, 1] - R[1, 2]) / S
+            x = 0.25 * S
+            y = (R[0, 1] + R[1, 0]) / S
+            z = (R[0, 2] + R[2, 0]) / S
+        elif R[1, 1] > R[2, 2]:
+            S = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2
+            w = (R[0, 2] - R[2, 0]) / S
+            x = (R[0, 1] + R[1, 0]) / S
+            y = 0.25 * S
+            z = (R[1, 2] + R[2, 1]) / S
+        else:
+            S = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2
+            w = (R[1, 0] - R[0, 1]) / S
+            x = (R[0, 2] + R[2, 0]) / S
+            y = (R[1, 2] + R[2, 1]) / S
+            z = 0.25 * S
+        
+        return np.array([w, x, y, z])
+    
+    def quaternion_to_matrix(q):
+        """四元数转旋转矩阵"""
+        w, x, y, z = q
+        
+        R11 = 1 - 2 * (y * y + z * z)
+        R12 = 2 * (x * y - w * z)
+        R13 = 2 * (x * z + w * y)
+        
+        R21 = 2 * (x * y + w * z)
+        R22 = 1 - 2 * (x * x + z * z)
+        R23 = 2 * (y * z - w * x)
+        
+        R31 = 2 * (x * z - w * y)
+        R32 = 2 * (y * z + w * x)
+        R33 = 1 - 2 * (x * x + y * y)
+        
+        return np.array([
+            [R11, R12, R13],
+            [R21, R22, R23],
+            [R31, R32, R33]
+        ])
+    
+    # 转换为四元数
+    q1 = matrix_to_quaternion(R1)
+    q2 = matrix_to_quaternion(R2)
+    
+    # 计算点积
+    dot = np.dot(q1, q2)
+    
+    # 如果点积为负，取反以获得最短路径
+    if dot < 0:
+        q2 = -q2
+        dot = -dot
+    
+    # 确保点积在有效范围内
+    dot = np.clip(dot, -1.0, 1.0)
+    
+    # 计算旋转角度
+    theta_0 = np.arccos(dot)
+    theta = theta_0 * t
+    
+    # 计算插值系数
+    if theta_0 < 1e-6:
+        # 角度太小，直接线性插值
+        q = (1 - t) * q1 + t * q2
+    else:
+        sin_theta_0 = np.sin(theta_0)
+        sin_theta = np.sin(theta)
+        cos_theta = np.cos(theta)
+        
+        s1 = cos_theta - dot * sin_theta / sin_theta_0
+        s2 = sin_theta / sin_theta_0
+        
+        q = s1 * q1 + s2 * q2
+    
+    # 归一化四元数
+    q = q / np.linalg.norm(q)
+    
+    # 转换回旋转矩阵
+    return quaternion_to_matrix(q)
 
 
 def handle_angle_continuity(current: float, last: float) -> float:

@@ -192,12 +192,12 @@
     <!-- <position name="tilt_roll_left" joint="prop_tilt_left" kp="15" kv="3" ctrllimited="true" ctrlrange="-3.0 3.0"/> -->
     <!-- <position name="tilt_roll_right" joint="prop_tilt_right" kp="15" kv="3" ctrllimited="true" ctrlrange="-3.0 3.0"/> -->
         <!-- 机臂偏航控制（位置伺服） -->
-    <position name="tilt_pitch_left" joint="arm_pitch_left" kp="100" kv="2" ctrllimited="true" ctrlrange="-3.0 3.0"/>
-    <position name="tilt_pitch_right" joint="arm_pitch_right" kp="100" kv="2" ctrllimited="true" ctrlrange="-3.0 3.0"/>
+    <position name="tilt_pitch_left" joint="arm_pitch_left" kp="200" kv="2" ctrllimited="true" ctrlrange="-3.0 3.0"/>
+    <position name="tilt_pitch_right" joint="arm_pitch_right" kp="200" kv="2" ctrllimited="true" ctrlrange="-3.0 3.0"/>
     
     <!-- 螺旋桨倾转控制（位置伺服） -->
-    <position name="tilt_roll_left" joint="prop_tilt_left" kp="100" kv="2" ctrllimited="true" ctrlrange="-3.0 3.0"/>
-    <position name="tilt_roll_right" joint="prop_tilt_right" kp="100" kv="2" ctrllimited="true" ctrlrange="-3.0 3.0"/>
+    <position name="tilt_roll_left" joint="prop_tilt_left" kp="200" kv="2" ctrllimited="true" ctrlrange="-3.0 3.0"/>
+    <position name="tilt_roll_right" joint="prop_tilt_right" kp="200" kv="2" ctrllimited="true" ctrlrange="-3.0 3.0"/>
   </actuator>
   
   <sensor>

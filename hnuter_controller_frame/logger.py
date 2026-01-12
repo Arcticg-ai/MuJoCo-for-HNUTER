@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 from typing import Dict, Any, List
 from controller import HnuterController
-from utils import euler_to_quaternion, get_all_axis_types
+from utils import euler_to_quaternion
 
 
 class DroneLogger:
@@ -26,9 +26,9 @@ class DroneLogger:
         if not os.path.exists('logs'):
             os.makedirs('logs')
         
-        # 创建带时间戳的文件名
+        # 创建带时间戳的文件名，与hnuter69区分
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_file = f'logs/drone_log_geometric_decoupled_{timestamp}.csv'
+        self.log_file = f'logs/drone_log_controller_frame_{timestamp}.csv'
         
         # 写入CSV表头（新增几何解耦相关字段）
         with open(self.log_file, 'w', newline='') as csvfile:
@@ -63,17 +63,26 @@ class DroneLogger:
         position = state.get('position', np.zeros(3))
         euler = state.get('euler', np.zeros(3))
         current_quat = state.get('quaternion', np.array([1.0, 0.0, 0.0, 0.0]))
-        target_quat = euler_to_quaternion(self.controller.target_attitude)
+        # 从旋转矩阵转换到四元数
+        from scipy.spatial.transform import Rotation as R
+        target_rot = R.from_matrix(self.controller.target_rotation_matrix)
+        target_quat = target_rot.as_quat()
+        # 从旋转矩阵转换到欧拉角（用于日志记录）
+        target_euler = target_rot.as_euler('xyz', degrees=False)
         is_pitch_exceed = state.get('is_pitch_exceed', False)
         
-        # 获取当前轴类型
-        axis_types = get_all_axis_types(euler[1])
-        
-        # 获取当前增益
-        KR_current = self.controller._get_scheduled_gains(euler[1])
-        
         # 获取实际倾转角度
-        actual_angles = self.controller.sim.get_actual_tilt_angles()
+        # 检查sim是否有get_actual_tilt_angles方法
+        actual_angles = {}
+        if hasattr(self.controller.sim, 'get_actual_tilt_angles'):
+            actual_angles = self.controller.sim.get_actual_tilt_angles()
+        actual_angles.setdefault('alpha1_actual', 0.0)
+        actual_angles.setdefault('alpha2_actual', 0.0)
+        actual_angles.setdefault('theta1_actual', 0.0)
+        actual_angles.setdefault('theta2_actual', 0.0)
+        
+        # 使用控制器的固定增益
+        KR_current = self.controller.KR
         
         with open(self.log_file, 'a', newline='') as csvfile:
             writer = csv.writer(csvfile)
@@ -82,7 +91,7 @@ class DroneLogger:
                 position[0], position[1], position[2],
                 self.controller.target_position[0], self.controller.target_position[1], self.controller.target_position[2],
                 euler[0], euler[1], euler[2],
-                self.controller.target_attitude[0], self.controller.target_attitude[1], self.controller.target_attitude[2],
+                target_euler[0], target_euler[1], target_euler[2],
                 current_quat[0], current_quat[1], current_quat[2], current_quat[3],
                 target_quat[0], target_quat[1], target_quat[2], target_quat[3],
                 state.get('velocity', [0,0,0])[0], state.get('velocity', [0,0,0])[1], state.get('velocity', [0,0,0])[2],
@@ -95,7 +104,7 @@ class DroneLogger:
                 self.controller.theta1, self.controller.theta2, actual_angles['theta1_actual'], actual_angles['theta2_actual'],
                 trajectory_phase,
                 int(is_pitch_exceed),
-                axis_types[0], axis_types[1], axis_types[2],
+                0, 0, 0,  # 占位符，不再使用轴类型
                 KR_current[0], KR_current[1], KR_current[2]
             ])
     
@@ -105,13 +114,17 @@ class DroneLogger:
             state = self.controller.sim.get_state()
             pos = state['position']
             euler_deg = np.degrees(state['euler'])
-            target_euler_deg = np.degrees(self.controller.target_attitude)
+            # 从旋转矩阵转换到欧拉角
+            from scipy.spatial.transform import Rotation as R
+            target_rot = R.from_matrix(self.controller.target_rotation_matrix)
+            target_euler = target_rot.as_euler('xyz', degrees=False)
+            target_euler_deg = np.degrees(target_euler)
             
-            # 获取当前轴类型
-            axis_types = get_all_axis_types(state['euler'][1])
+            # 使用默认轴类型（不再使用动态轴类型）
+            axis_types = ["fast", "fast", "fast"]
             
-            # 获取当前增益
-            KR_current = self.controller._get_scheduled_gains(state['euler'][1])
+            # 使用控制器的固定增益
+            KR_current = self.controller.KR
             
             # 阶段名称映射
             phase_names = {

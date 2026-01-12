@@ -227,3 +227,22 @@ class SimulationFramework:
         if body_id != -1:
             return self.data.xquat[body_id].copy()
         return np.array([1.0, 0.0, 0.0, 0.0])
+    
+    def get_actuator_torques(self) -> Dict[str, float]:
+        """获取执行器力矩（从传感器反馈）"""
+        torques = {}
+        try:
+            # 从传感器获取执行器力矩
+            torque_sensors = [
+                'motor_r_upper_torque', 'motor_r_lower_torque',
+                'motor_l_upper_torque', 'motor_l_lower_torque',
+                'motor_rear_upper_torque'
+            ]
+            
+            for sensor_name in torque_sensors:
+                if sensor_name in self.sensor_ids:
+                    torques[sensor_name] = self.data.sensordata[self.sensor_ids[sensor_name]]
+        except Exception as e:
+            print(f"获取执行器力矩失败: {e}")
+        
+        return torques
