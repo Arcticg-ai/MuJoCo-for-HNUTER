@@ -27,7 +27,8 @@ def quat_to_rotation_matrix(quat: np.ndarray) -> np.ndarray:
 
 
 def quat_to_euler(quat: np.ndarray) -> np.ndarray:
-    """四元数转欧拉角 (roll, pitch, yaw)"""
+    """四元数转欧拉角 (roll, pitch, yaw)，内禀 XYZ 顺序。
+    注意：pitch=±90° 时为万向锁奇异，roll 与 yaw 不可唯一分解，仅保证 pitch 正确。"""
     w, x, y, z = quat
     
     # Roll (x轴旋转)
@@ -35,7 +36,7 @@ def quat_to_euler(quat: np.ndarray) -> np.ndarray:
     cosr_cosp = 1 - 2 * (x * x + y * y)
     roll = math.atan2(sinr_cosp, cosr_cosp)
     
-    # Pitch (y轴旋转)
+    # Pitch (y轴旋转)；|sinp|>=1 时限定为 ±π/2，避免 asin 域错误
     sinp = 2 * (w * y - z * x)
     if abs(sinp) >= 1:
         pitch = math.copysign(math.pi / 2, sinp)

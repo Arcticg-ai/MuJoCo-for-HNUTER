@@ -23,42 +23,110 @@ class ActuatorAllocation:
         self.T_max = 60  # 前旋翼组最大推力
         self.T5_max = 15  # 尾部推进器最大推力
         
-        print("执行器分配模块初始化完成")
+        print("执行器分配模块初始化完成 (Optimization-based Null-space Allocation Enabled)")
     
     def inverse_nonlinear_mapping(self, W, state):
-        """修正后的代数逆映射函数（适配90°大角度）"""
-        # 尾部推力 (由俯仰力矩确定)
-        u7 = (2/1) * W[4]                     
+        """
+        修正后的代数逆映射函数（引入零空间优化分配）
+        """
+        Fx, Fy, Fz, Tx, Ty, Tz = W
+        
+        # 几何参数 (从self.l1, self.l2获取，避免硬编码)
+        # 避免除零
+        l1 = self.l1 if self.l1 > 1e-3 else 0.15
+        l2 = self.l2 if self.l2 > 1e-3 else 0.5
+        
+        kappa1 = 1.0 / (2.0 * l1)
+        kappa2 = 1.0 / (2.0 * l1)
+        kappa3 = 1.0 / l2
+        
+        # 1. 基础解 (Base Solution, lambda=0)
+        # 尾部推力 (由俯仰力矩Ty确定)
+        u7 = kappa3 * Ty
         
         # 左/右旋翼的 X轴分力 (由总Fx和偏航力矩Tz确定)
-        u1 = W[0]/2 - (10/3)*W[5]              
-        u4 = W[0]/2 + (10/3)*W[5]              
+        # u1: Left X, u4: Right X
+        u1 = 0.5 * Fx - kappa1 * Tz
+        u4 = 0.5 * Fx + kappa1 * Tz
         
         # 左/右旋翼的 Z轴分力 (由总Fz和滚转力矩Tx确定)
-        Fz_front = W[2]
-        u2 = Fz_front/2 - (10/3)*W[3]  
-        u5 = Fz_front/2 + (10/3)*W[3]  
-
-        # 侧向分力均分
-        target_Fy = W[1]
-        u3 = -target_Fy / 2.0
-        u6 = -target_Fy / 2.0
+        # u2: Left Z, u5: Right Z
+        u2 = 0.5 * Fz - kappa2 * Tx
+        u5 = 0.5 * Fz + kappa2 * Tx
         
-        # 计算推力和角度（增加90°大角度保护）
+        # 侧向分力基础解 (均分)
+        # u3: Left Y, u6: Right Y
+        # 注意：u3_base = -0.5 * Fy, u6_base = -0.5 * Fy
+        u3_base = -0.5 * Fy
+        u6_base = -0.5 * Fy
+        
+        # 2. 零空间优化 (Null-space Optimization)
+        # 目标：利用冗余自由度 lambda 重新分配侧向力，防止单侧饱和
+        # u3 = u3_base + lambda
+        # u6 = u6_base - lambda
+        
+        # 计算剩余推力容量平方 (Residual Capacity Squared)
+        T_max_sq = self.T_max ** 2
+        
+        term_left = u1**2 + u2**2
+        term_right = u4**2 + u5**2
+        
+        R_left_sq = T_max_sq - term_left
+        R_right_sq = T_max_sq - term_right
+        
+        # 如果基础分量已经导致过载，则无法通过lambda完全修复，但仍可优化
+        # 这里为了数值稳定性，取max(0, ...)
+        R_left = np.sqrt(np.maximum(0, R_left_sq))
+        R_right = np.sqrt(np.maximum(0, R_right_sq))
+        
+        # 确定 lambda 的可行范围
+        # -R_left <= u3_base + lambda <= R_left
+        # -R_right <= u6_base - lambda <= R_right  =>  lambda <= u6_base + R_right  AND  lambda >= u6_base - R_right
+        
+        lambda_min_left = -R_left - u3_base
+        lambda_max_left = R_left - u3_base
+        
+        lambda_min_right = u6_base - R_right
+        lambda_max_right = u6_base + R_right
+        
+        # 求交集
+        lambda_min = np.maximum(lambda_min_left, lambda_min_right)
+        lambda_max = np.minimum(lambda_max_left, lambda_max_right)
+        
+        # 选择最优 lambda
+        # 策略：优先选 0 (能量最优)，如果 0 不在范围内，则选边界
+        optimal_lambda = 0.0
+        
+        if lambda_min > lambda_max:
+            # 无解情况（两边都严重饱和），取中间值或者保持0
+            optimal_lambda = 0.0 
+        else:
+            if optimal_lambda < lambda_min:
+                optimal_lambda = lambda_min
+            elif optimal_lambda > lambda_max:
+                optimal_lambda = lambda_max
+            else:
+                optimal_lambda = 0.0
+        
+        # 应用优化后的 lambda
+        u3 = u3_base + optimal_lambda
+        u6 = u6_base - optimal_lambda
+        
+        # 3. 计算推力和角度
         F1 = np.sqrt(u1**2 + u2**2 + u3**2)
         F2 = np.sqrt(u4**2 + u5**2 + u6**2)
         F3 = u7
         
-        # 防止除零保护（90°大角度下更严格）
+        # 防止除零保护
         eps = 1e-8
         F1_safe = F1 if F1 > eps else eps
         F2_safe = F2 if F2 > eps else eps
 
-        # 求解倾转角度（增加数值稳定性）
+        # 求解倾转角度
         alpha1 = np.arctan2(u1, u2)  
         alpha2 = np.arctan2(u4, u5)
         
-        val1 = np.clip(u3 / F1_safe, -1.0 + eps, 1.0 - eps)  # 避免arcsin(±1)的数值问题
+        val1 = np.clip(u3 / F1_safe, -1.0 + eps, 1.0 - eps)
         val2 = np.clip(u6 / F2_safe, -1.0 + eps, 1.0 - eps)
         
         theta1 = np.arcsin(val1)
@@ -140,8 +208,8 @@ class ActuatorAllocation:
             ctrl_values = {
                 'tilt_pitch_left': alpha1,
                 'tilt_pitch_right': alpha2,
-                'tilt_roll_right': theta1,  # theta1对应右侧螺旋桨倾转（与hnuter69一致）
-                'tilt_roll_left': theta2,   # theta2对应左侧螺旋桨倾转（与hnuter69一致）
+                'tilt_roll_right': theta2,  # 右组侧向倾角 theta2
+                'tilt_roll_left': theta1,   # 左组侧向倾角 theta1
                 'motor_l_upper': T12 / 2,
                 'motor_l_lower': T12 / 2,
                 'motor_r_upper': T34 / 2,
