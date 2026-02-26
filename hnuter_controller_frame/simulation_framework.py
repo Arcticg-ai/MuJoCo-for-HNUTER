@@ -196,8 +196,24 @@ class SimulationFramework:
         mj.mj_step(self.model, self.data)
     
     def reset(self):
-        """重置仿真"""
+        """重置仿真状态"""
         mj.mj_resetData(self.model, self.data)
+
+        # 显式重置倾转角度为0
+        if 'tilt_pitch_left' in self.actuator_ids:
+            self.data.ctrl[self.actuator_ids['tilt_pitch_left']] = 0.0
+        if 'tilt_pitch_right' in self.actuator_ids:
+            self.data.ctrl[self.actuator_ids['tilt_pitch_right']] = 0.0
+        if 'tilt_roll_left' in self.actuator_ids:
+            self.data.ctrl[self.actuator_ids['tilt_roll_left']] = 0.0
+        if 'tilt_roll_right' in self.actuator_ids:
+            self.data.ctrl[self.actuator_ids['tilt_roll_right']] = 0.0
+
+        # 重置倾转角状态变量
+        self.alpha1_actual = 0.0
+        self.alpha2_actual = 0.0
+        self.theta1_actual = 0.0
+        self.theta2_actual = 0.0
     
     def get_actual_tilt_angles(self) -> Dict[str, float]:
         """获取实际倾转角度"""
@@ -227,22 +243,3 @@ class SimulationFramework:
         if body_id != -1:
             return self.data.xquat[body_id].copy()
         return np.array([1.0, 0.0, 0.0, 0.0])
-    
-    def get_actuator_torques(self) -> Dict[str, float]:
-        """获取执行器力矩（从传感器反馈）"""
-        torques = {}
-        try:
-            # 从传感器获取执行器力矩
-            torque_sensors = [
-                'motor_r_upper_torque', 'motor_r_lower_torque',
-                'motor_l_upper_torque', 'motor_l_lower_torque',
-                'motor_rear_upper_torque'
-            ]
-            
-            for sensor_name in torque_sensors:
-                if sensor_name in self.sensor_ids:
-                    torques[sensor_name] = self.data.sensordata[self.sensor_ids[sensor_name]]
-        except Exception as e:
-            print(f"获取执行器力矩失败: {e}")
-        
-        return torques

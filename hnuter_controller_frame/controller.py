@@ -25,13 +25,11 @@ class HnuterController:
         self.is_pitch_exceed = False  # 标记是否超过阈值
         self._pitch_warned = False  # 避免重复打印警告
         
-        # 几何控制器增益（针对90°大角度微调）
-        self.Kp = np.diag([15, 15, 15])  # 位置增益适度提高
-        # self.Kp = np.diag([10, 10, 10]) 
+        # 几何控制器增益（针对90°大角度微调，同步hnuter69.py）
+        self.Kp = np.diag([6, 6, 6])  # 位置增益
         self.Dp = np.diag([5, 5, 5])  # 速度阻尼
-        self.KR = np.array([3, 2.5, 1.5])   # 姿态增益适度提高，增强大角度跟踪
-        # self.KR = np.array([3, 2.5, 1.5])   
-        self.Domega = np.array([0.9, 0.6, 0.6])  # 角速度阻尼适度提高
+        self.KR = np.array([3, 2.0, 0.3])   # 姿态增益，增强大角度跟踪
+        self.Domega = np.array([0.9, 0.6, 0.6])  # 角速度阻尼
         
         # 控制量
         self.f_c_body = np.zeros(3)  # 机体坐标系下的控制力
@@ -97,74 +95,15 @@ class HnuterController:
         R = state['rotation_matrix']
         angular_velocity = state['angular_velocity']
         R_des = self.target_rotation_matrix
-        
-        # 异常数值检查：旋转矩阵
-        def is_valid_rotation_matrix(R_mat):
-            """检查旋转矩阵是否有效"""
-            if np.any(np.isnan(R_mat)) or np.any(np.isinf(R_mat)):
-                return False
-            # 检查正交性
-            I = np.eye(3)
-            orthogonality = np.linalg.norm(R_mat.T @ R_mat - I)
-            # 检查行列式
-            det = np.linalg.det(R_mat)
-            return orthogonality < 1e-3 and abs(det - 1) < 1e-3
-        
-        # 检查当前旋转矩阵
-        if not is_valid_rotation_matrix(R):
-            print(f"⚠️  异常：当前旋转矩阵无效！R=\n{R}")
-            # 使用单位矩阵代替
-            R = np.eye(3)
-        
-        # 检查目标旋转矩阵
-        if not is_valid_rotation_matrix(R_des):
-            print(f"⚠️  异常：目标旋转矩阵无效！R_des=\n{R_des}")
-            # 使用单位矩阵代替
-            R_des = np.eye(3)
-        
+
         e_R = 0.5 * vee_map(R_des.T @ R - R.T @ R_des)
         omega_error = angular_velocity - R.T @ R_des @ self.target_attitude_rate
         
         # 控制力矩
         tau_c = -self.KR * e_R - self.Domega * omega_error
-        
-        # 异常数值检查：力矩
-        def check_nan_inf(value, name):
-            """检查数值是否包含NaN或无穷大"""
-            if np.any(np.isnan(value)):
-                print(f"⚠️  异常：{name}包含NaN！{name}={value}")
-                return False
-            if np.any(np.isinf(value)):
-                print(f"⚠️  异常：{name}包含无穷大！{name}={value}")
-                return False
-            return True
-        
-        # 检查力矩
-        if not check_nan_inf(tau_c, "控制力矩tau_c"):
-            # 限制力矩范围
-            tau_c = np.clip(tau_c, -20.0, 20.0)
-            print(f"🔧 已限制力矩范围：tau_c={tau_c}")
-        
-        # 检查姿态误差
-        check_nan_inf(e_R, "姿态误差e_R")
-        # 检查角速度误差
-        check_nan_inf(omega_error, "角速度误差omega_error")
-        
-        # ========== 核心修改：俯仰角超限时置零横滚/偏航力矩 ==========  
-        # if state['is_pitch_exceed']:
-            # tau_c[0] = 0.0  # 横滚力矩置零
-            # tau_c[2] = 0.0  # 偏航力矩置零
+
         # 转换到机体坐标系
         f_c_body = R.T @ f_c_world
-        
-        # 检查控制力
-        if not check_nan_inf(f_c_body, "机体控制力f_c_body"):
-            # 限制控制力范围
-            f_c_body = np.clip(f_c_body, -50.0, 50.0)
-            print(f"🔧 已限制控制力范围：f_c_body={f_c_body}")
-        
-        # 检查世界控制力
-        check_nan_inf(f_c_world, "世界控制力f_c_world")
         
         # 更新类成员变量
         self.f_c_body = f_c_body

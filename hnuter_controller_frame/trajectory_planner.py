@@ -611,10 +611,27 @@ class TrajectoryPlanner:
                 # 最终悬停状态，目标姿态为单位矩阵
                 R_des = np.eye(3)
         
-        # 平滑插值：使用 Slerp 确保旋转矩阵平滑过渡（每步向目标靠拢 50%，收敛速度与步长有关）
+        # 平滑插值：使用自适应 Slerp 确保旋转矩阵平滑过渡
         from utils import slerp
-        R_des = slerp(self.R_des_prev, R_des, 0.5)
-        
+        from scipy.spatial.transform import Rotation as R_scipy
+
+        # 计算旋转角度差
+        R_prev = R_scipy.from_matrix(self.R_des_prev)
+        R_target = R_scipy.from_matrix(R_des)
+        angle_diff = (R_prev.inv() * R_target).magnitude()  # 弧度
+
+        # 自适应插值系数：角度差越大，系数越小，实现更平滑的过渡
+        if angle_diff > np.radians(30):  # 大于30度
+            alpha = 0.05  # 慢速插值，避免突变
+        elif angle_diff > np.radians(10):  # 10-30度
+            alpha = 0.1
+        elif angle_diff > np.radians(5):  # 5-10度
+            alpha = 0.2
+        else:  # 小于5度
+            alpha = 0.5  # 快速收敛
+
+        R_des = slerp(self.R_des_prev, R_des, alpha)
+
         # 更新上一时刻的目标旋转矩阵
         self.R_des_prev = R_des.copy()
         

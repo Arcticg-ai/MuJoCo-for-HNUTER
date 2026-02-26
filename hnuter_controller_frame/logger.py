@@ -45,6 +45,13 @@ class DroneLogger:
                 'f_world_x', 'f_world_y', 'f_world_z',
                 'f_body_x', 'f_body_y', 'f_body_z',
                 'tau_x', 'tau_y', 'tau_z',
+                # 增加旋转矩阵日志
+                'R11', 'R12', 'R13', 'R21', 'R22', 'R23', 'R31', 'R32', 'R33',
+                'R_des11', 'R_des12', 'R_des13', 'R_des21', 'R_des22', 'R_des23', 'R_des31', 'R_des32', 'R_des33',
+                # 增加u1到u7日志
+                'u1', 'u2', 'u3', 'u4', 'u5', 'u6', 'u7',
+                # 增加控制输入向量u日志
+                'u_T12', 'u_T34', 'u_T5', 'u_alpha1', 'u_alpha2', 'u_theta1', 'u_theta2',
                 'T12', 'T34', 'T5',
                 'alpha1_cmd', 'alpha2_cmd', 'alpha1_actual', 'alpha2_actual',
                 'theta1_cmd', 'theta2_cmd', 'theta1_actual', 'theta2_actual',
@@ -84,6 +91,46 @@ class DroneLogger:
         # 使用控制器的固定增益
         KR_current = self.controller.KR
         
+        # 获取旋转矩阵数据
+        R = state.get('rotation_matrix', np.eye(3))  # 当前旋转矩阵
+        R_des = self.controller.target_rotation_matrix  # 目标旋转矩阵
+        
+        # 展开旋转矩阵为9个元素
+        R_flat = R.flatten()
+        R_des_flat = R_des.flatten()
+        
+        # 计算u1到u7（基于当前的控制向量和力矩）
+        def calculate_u_values(controller):
+            """计算u1到u7值"""
+            # 控制向量W
+            f_body = controller.f_c_body
+            tau = controller.tau_c
+            W = np.array([f_body[0], f_body[1], f_body[2], tau[0], tau[1], tau[2]])
+            
+            # 尾部推力 (由俯仰力矩确定)
+            u7 = (2/1) * W[4]                      
+            
+            # 左/右旋翼的 X轴分力 (由总Fx和偏航力矩Tz确定)
+            u1 = W[0]/2 - (10/3)*W[5]              
+            u4 = W[0]/2 + (10/3)*W[5]              
+            
+            # 左/右旋翼的 Z轴分力 (由总Fz和滚转力矩Tx确定)
+            Fz_front = W[2]
+            u2 = Fz_front/2 - (10/3)*W[3]  
+            u5 = Fz_front/2 + (10/3)*W[3]  
+            
+            # 侧向分力均分
+            target_Fy = W[1]
+            u3 = -target_Fy / 2.0
+            u6 = -target_Fy / 2.0
+            
+            return np.array([u1, u2, u3, u4, u5, u6, u7])
+        
+        u_values = calculate_u_values(self.controller)
+        
+        # 控制输入向量u
+        u_vector = self.controller.u
+        
         with open(self.log_file, 'a', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow([
@@ -99,6 +146,13 @@ class DroneLogger:
                 self.controller.f_c_world[0], self.controller.f_c_world[1], self.controller.f_c_world[2],
                 self.controller.f_c_body[0], self.controller.f_c_body[1], self.controller.f_c_body[2],
                 self.controller.tau_c[0], self.controller.tau_c[1], self.controller.tau_c[2],
+                # 旋转矩阵数据
+                *R_flat,
+                *R_des_flat,
+                # u1到u7数据
+                *u_values,
+                # 控制输入向量u
+                *u_vector,
                 self.controller.T12, self.controller.T34, self.controller.T5,
                 self.controller.alpha1, self.controller.alpha2, actual_angles['alpha1_actual'], actual_angles['alpha2_actual'],
                 self.controller.theta1, self.controller.theta2, actual_angles['theta1_actual'], actual_angles['theta2_actual'],
@@ -171,7 +225,6 @@ class DroneLogger:
         print(f"最终位置: ({final_state['position'][0]:.2f}, {final_state['position'][1]:.2f}, {final_state['position'][2]:.2f})m")
         print(f"最终姿态: Roll={np.degrees(final_state['euler'][0]):.2f}°, Pitch={np.degrees(final_state['euler'][1]):.2f}°, Yaw={np.degrees(final_state['euler'][2]):.2f}°")
         print(f"日志文件: {self.log_file}")
-        print(f"轨迹阶段: {self.controller.trajectory_phase}")
         print("=================")
     
     def log_error(self, error_message: str):

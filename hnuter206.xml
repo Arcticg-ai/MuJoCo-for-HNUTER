@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+  <compiler angle="radian" inertiafromgeom="false" meshdir="HDJQR-0102-0055.SLDASM/meshes"/>
+  <option timestep="0.001" iterations="100" tolerance="1e-10" integrator="RK4"/>
+
+  <!-- 全局默认参数 -->
+  <default>
+    <geom contype="1" conaffinity="1" solimp="0.9 0.95 0.001" solref="0.02 1"/>
+    <joint limited="true" damping="0.1" armature="0.1"/>
+  </default>
+
+  <default>
+    <!-- 定义碰撞类别 -->
+    <!-- 机体类别：contype=2, conaffinity=1，只与环境（contype=1）碰撞 -->
+    <default class="body">
+      <geom contype="2" conaffinity="1"/>
+    </default>
+    <!-- 螺旋桨类别：contype=4, conaffinity=1，只与环境（contype=1）碰撞 -->
+    <default class="propeller">
+      <geom contype="4" conaffinity="1"/>
+    </default>
+  </default>
+
+  <asset>
+    <material name="white" rgba="0.9 0.9 0.9 1"/>
+    <material name="orange" rgba="1.0 0.5 0.0 1"/>
+    <material name="blue" rgba="0.0 0.5 1.0 1"/>
+    <material name="dark_gray" rgba="0.3 0.3 0.3 1"/>
+    <material name="cyan" rgba="0.0 1.0 1.0 1"/>
+    <material name="black" rgba="0.1 0.1 0.1 1"/>
+    <material name="propeller_color1" rgba="0.7 0.9 1.0 0.8"/>
+    <material name="propeller_color2" rgba="1.0 0.7 0.7 0.8"/>
+
+    <!-- 导入STL网格文件 -->
+    <mesh name="base_link" file="base_link.STL"/>
+    <mesh name="r2" file="r2.STL"/>
+    <mesh name="r1" file="r1.STL"/>
+    <mesh name="l2" file="l2.STL"/>
+    <mesh name="l1" file="l1.STL"/>
+    <mesh name="xy1" file="xy1.STL"/>
+    <mesh name="xy2" file="xy2.STL"/>
+    <mesh name="xy3" file="xy3.STL"/>
+    <mesh name="xy4" file="xy4.STL"/>
+    <mesh name="xy5" file="xy5.STL"/>
+  </asset>
+
+  <worldbody>
+    <!-- 地面：使用全局默认（contype=1, conaffinity=1），与所有部件碰撞 -->
+    <geom name="ground" type="plane" size="10 10 0.1" pos="0 0 0" rgba="0.8 0.9 0.8 1"/>
+
+    <!-- 无人机主体 -->
+    <body name="drone" pos="0 0 0.5">
+      <freejoint/>
+
+      <!-- 主机身 base_link -->
+      <geom name="base_link" type="mesh" mesh="base_link" material="white" class="body"/>
+      <inertial pos="0.0359209 -0.000473047 -0.0390188" mass="5.956"
+                fullinertia="0.00533272 0.0172139 0.0202509 2.89213e-06 8.78235e-06 -1.16537e-07"/>
+
+      <!-- 右机臂系统 (r2 -> r1 -> xy1, xy2) -->
+      <body name="r2" pos="0 -0.0855 -0.01287" quat="0.5 0.5 0.5 -0.5">
+        <!-- 机臂pitch关节 -->
+        <joint name="rj2" type="hinge" pos="0 0 0" axis="0 0 -1" limited="true" range="-1.57 1.57"/>
+
+        <geom name="r2_mesh" type="mesh" mesh="r2" material="white" class="body"/>
+        <inertial pos="7.145e-05 -0.0392314 0.160773" mass="0.839686"
+                  fullinertia="0.0067372 0.00159926 0.00527979 4.96409e-07 -2.07904e-07 9.00484e-05"/>
+
+        <!-- r1 连接体 -->
+        <body name="r1" pos="0 -0.2447 0.3245" quat="0.5 0.5 -0.5 0.5">
+          <!-- roll关节 -->
+          <joint name="rj1" type="hinge" pos="0 0 0" axis="0 0 -1" limited="true" range="-1.57 1.57"/>
+
+          <geom name="r1_mesh" type="mesh" mesh="r1" material="cyan" class="body"/>
+          <inertial pos="9.30467e-05 2.23498e-05 -0.223444" mass="0.484386"
+                    fullinertia="0.000965551 0.000998547 8.66173e-05 6.08819e-12 -1.05724e-08 -2.08714e-11"/>
+
+          <!-- 螺旋桨 xy1 -->
+          <body name="xy1" pos="0 0.045 -0.2447" quat="0.707107 -0.707107 0 0">
+            <joint name="xyj1" type="hinge" pos="0 0 0" axis="0 0 -1" limited="false"/>
+            <geom name="xy1_mesh" type="mesh" mesh="xy1" material="propeller_color1" class="propeller"/>
+            <inertial pos="4.01606e-07 -1.03677e-06 0.000693207" mass="0.0289694"
+                      fullinertia="0.000321597 4.61239e-06 0.000325994 -2.1186e-05 -4.96185e-09 -4.4069e-10"/>
+            <site name="motor_xy1" pos="0.0 0.0 0.0" zaxis="0 0 1"/>
+          </body>
+
+          <!-- 螺旋桨 xy2 -->
+          <body name="xy2" pos="0 -0.045 -0.2447" quat="0.707107 0.707107 0 0">
+            <joint name="xyj2" type="hinge" pos="0 0 0" axis="0 0 -1" limited="false"/>
+            <geom name="xy2_mesh" type="mesh" mesh="xy2" material="propeller_color1" class="propeller"/>
+            <inertial pos="-8.47438e-07 7.11773e-07 0.000693223" mass="0.0289694"
+                      fullinertia="0.000265509 6.0701e-05 0.000325994 0.00012281 4.13131e-09 2.78312e-09"/>
+            <site name="motor_xy2" pos="0.0 0.0 0.0" zaxis="0 0 1"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- 左机臂系统 (l2 -> l1 -> xy3, xy4) -->
+      <body name="l2" pos="0 0.0855 -0.01287" quat="0.5 0.5 0.5 -0.5">
+        <!-- 机臂pitch关节 -->
+        <joint name="lj2" type="hinge" pos="0 0 0" axis="0 0 1" limited="true" range="-1.57 1.57"/>
+
+        <geom name="l2_mesh" type="mesh" mesh="l2" material="white" class="body"/>
+        <inertial pos="6.75249e-05 0.0326713 -0.165321" mass="0.863668"
+                  fullinertia="0.00673903 0.00160098 0.00528162 -4.92568e-07 2.17779e-07 9.00527e-05"/>
+
+        <!-- l1 连接体 -->
+        <body name="l1" pos="0 0.2447 -0.3245" quat="0.5 0.5 -0.5 0.5">
+          <!-- roll关节 -->
+          <joint name="lj1" type="hinge" pos="0 0 0" axis="0 0 1" limited="true" range="-1.57 1.57"/>
+
+          <geom name="l1_mesh" type="mesh" mesh="l1" material="cyan" class="body"/>
+          <inertial pos="-9.34016e-05 1.41486e-06 0.223434" mass="0.483858"
+                    fullinertia="0.000965664 0.00099843 8.66142e-05 -1.95652e-06 -1.05552e-08 -6.07227e-10"/>
+
+          <!-- 螺旋桨 xy3 -->
+          <body name="xy3" pos="0.00267277 -0.0449206 0.2447" quat="0.706825 0.707388 0 0.0297145">
+            <joint name="xyj3" type="hinge" pos="0 0 0" axis="0 0 -1" limited="false"/>
+            <geom name="xy3_mesh" type="mesh" mesh="xy3" material="propeller_color2" class="propeller"/>
+            <inertial pos="-2.95163e-07 -6.82057e-08 0.000693234" mass="0.0289688"
+                      fullinertia="0.000159669 0.000166533 0.000325987 -0.000159862 -3.61041e-09 3.44534e-09"/>
+            <site name="motor_xy3" pos="0.0 0.0 0.0" zaxis="0 0 1"/>
+          </body>
+
+          <!-- 螺旋桨 xy4 -->
+          <body name="xy4" pos="-0.00267277 0.0449206 0.2447" quat="0.706825 -0.707388 0 0.0297145">
+            <joint name="xyj4" type="hinge" pos="0 0 0" axis="0 0 -1" limited="false"/>
+            <geom name="xy4_mesh" type="mesh" mesh="xy4" material="propeller_color2" class="propeller"/>
+            <inertial pos="-3.35068e-07 -1.09872e-07 0.000693235" mass="0.0289688"
+                      fullinertia="0.00014765 0.000178552 0.000325986 -0.000159151 -3.4797e-09 3.57808e-09"/>
+            <site name="motor_xy4" pos="0.0 0.0 0.0" zaxis="0 0 1"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- 后部螺旋桨 xy5 -->
+      <body name="xy5" pos="-0.768 0 0.014875" quat="0.707107 0 0 -0.707107">
+        <joint name="xyj5" type="hinge" pos="0 0 0" axis="0 0 -1" limited="false"/>
+        <geom name="xy5_mesh" type="mesh" mesh="xy5" material="propeller_color1" class="propeller"/>
+        <inertial pos="1.10057e-06 1.8788e-07 0.000708803" mass="0.0289694"
+                  fullinertia="2.46212e-05 0.000301589 0.000325994 7.99437e-05 -5.30788e-10 -4.95301e-09"/>
+        <site name="motor_xy5" pos="0.0 0.0 0.0" zaxis="0 0 1"/>
+      </body>
+    </body>
+
+    <light name="light" pos="0 0 5" dir="0 0 -1" directional="true" castshadow="true"/>
+  </worldbody>
+
+  <!-- 执行器定义 -->
+  <actuator>
+    <!-- 螺旋桨推力控制 - 每个旋翼最大升力2.5kg≈24.5N -->
+    <!-- gear参数：[0 0 fz 0 0 0]，fz=1表示直接施加力，控制信号单位为N -->
+
+    <!-- 右侧共轴双桨 (xy1上, xy2下) -->
+    <motor name="motor_xy1" site="motor_xy1" gear="0 0 1 0 0 0" forcerange="0 50" ctrlrange="0 50"/>
+    <motor name="motor_xy2" site="motor_xy2" gear="0 0 -1 0 0 0" forcerange="0 50" ctrlrange="0 50"/>
+
+    <!-- 左侧共轴双桨 (xy3上, xy4下) -->
+    <motor name="motor_xy3" site="motor_xy3" gear="0 0 -1 0 0 0" forcerange="0 50" ctrlrange="0 50"/>
+    <motor name="motor_xy4" site="motor_xy4" gear="0 0 1 0 0 0" forcerange="0 50" ctrlrange="0 50"/>
+
+    <!-- 后部单桨 -->
+    <motor name="motor_xy5" site="motor_xy5" gear="0 0 1 0 0 0" forcerange="-20 20" ctrlrange="-20 20"/>
+
+    <!-- 机臂pitch控制（位置伺服）- 优化参数减少震荡 -->
+    <position name="tilt_rj2" joint="rj2" kp="50" kv="5" ctrllimited="true" ctrlrange="-1.57 1.57"/>
+    <position name="tilt_lj2" joint="lj2" kp="50" kv="5" ctrllimited="true" ctrlrange="-1.57 1.57"/>
+
+    <!-- 机臂roll控制（位置伺服）- 优化参数减少震荡 -->
+    <position name="tilt_rj1" joint="rj1" kp="50" kv="5" ctrllimited="true" ctrlrange="-1.57 1.57"/>
+    <position name="tilt_lj1" joint="lj1" kp="50" kv="5" ctrllimited="true" ctrlrange="-1.57 1.57"/>
+  </actuator>
+
+  <sensor>
+    <!-- 位置和姿态传感器 -->
+    <framepos name="drone_pos" objtype="body" objname="drone"/>
+    <framequat name="drone_quat" objtype="body" objname="drone"/>
+
+    <!-- 螺旋桨速度传感器 -->
+    <jointvel name="xy1_vel" joint="xyj1"/>
+    <jointvel name="xy2_vel" joint="xyj2"/>
+    <jointvel name="xy3_vel" joint="xyj3"/>
+    <jointvel name="xy4_vel" joint="xyj4"/>
+    <jointvel name="xy5_vel" joint="xyj5"/>
+
+    <!-- 倾转角度传感器 -->
+    <jointpos name="rj2_pos" joint="rj2"/>
+    <jointpos name="lj2_pos" joint="lj2"/>
+    <jointpos name="rj1_pos" joint="rj1"/>
+    <jointpos name="lj1_pos" joint="lj1"/>
+
+    <!-- 执行器状态传感器 -->
+    <actuatorfrc name="motor_xy1_torque" actuator="motor_xy1"/>
+    <actuatorfrc name="motor_xy2_torque" actuator="motor_xy2"/>
+    <actuatorfrc name="motor_xy3_torque" actuator="motor_xy3"/>
+    <actuatorfrc name="motor_xy4_torque" actuator="motor_xy4"/>
+    <actuatorfrc name="motor_xy5_torque" actuator="motor_xy5"/>
+  </sensor>
+</mujoco>

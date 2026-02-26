@@ -21,7 +21,7 @@ class HnuterController:
         # 物理参数
         self.dt = self.model.opt.timestep
         self.gravity = 9.81
-        self.mass = 4.2  # 主机身质量 + 旋翼机构质量 4.2kg
+        self.mass = 5.956  # 主机身质量（从URDF获取）
         self.J = np.diag([0.08, 0.12, 0.1])  # 惯量矩阵
         
         # 旋翼布局参数
@@ -29,17 +29,17 @@ class HnuterController:
         self.l2 = 0.5  # 尾部推进器X向距离(m)
         self.k_d = 8.1e-8  # 尾部反扭矩系数
         
-        # ========== 新增：俯仰角阈值参数 ==========
+        # ========== 俯仰角阈值参数 ==========
         self.pitch_threshold_deg = 70.0  # 俯仰角阈值（度）
         self.pitch_threshold_rad = np.radians(self.pitch_threshold_deg)  # 转换为弧度
         self.is_pitch_exceed = False  # 标记是否超过阈值
         self._pitch_warned = False  # 避免重复打印警告
         
         # 几何控制器增益（针对90°大角度微调）
-        self.Kp = np.diag([6, 6, 6])  # 位置增益适度提高
-        self.Dp = np.diag([5, 5, 5])  # 速度阻尼
-        self.KR = np.array([3, 2.0, 0.3])   # 姿态增益适度提高，增强大角度跟踪
-        self.Domega = np.array([0.9, 0.6, 0.6])  # 角速度阻尼适度提高
+        self.Kp = np.diag([8, 8, 10])  # 位置增益，Z轴增大以提高悬停响应
+        self.Dp = np.diag([6, 6, 6])  # 速度阻尼
+        self.KR = np.array([3, 2.0, 0.3])   # 姿态增益
+        self.Domega = np.array([0.9, 0.6, 0.6])  # 角速度阻尼
 
         # 控制量
         self.f_c_body = np.zeros(3)  # 机体坐标系下的控制力
@@ -64,8 +64,7 @@ class HnuterController:
         self.target_position = np.array([0.0, 0.0, 0.3])  # 初始目标高度
         self.target_velocity = np.array([0.0, 0.0, 0.0])
         self.target_acceleration = np.array([0.0, 0.0, 0.0])
-        self.target_attitude = np.array([0.0, 0.0, 0.0])  # roll, pitch, yaw（兼容原有逻辑）
-        self.target_quat = np.array([1.0, 0.0, 0.0, 0.0])  # 核心新增：目标四元数 [w, x, y, z]
+        self.target_rotation_matrix = np.eye(3)  # 目标旋转矩阵（替代欧拉角）
         self.target_attitude_rate = np.array([0.0, 0.0, 0.0])
         self.target_attitude_acceleration = np.array([0.0, 0.0, 0.0])
         
@@ -91,15 +90,13 @@ class HnuterController:
         # 创建日志文件
         self._create_log_file()
 
-        # ========== 核心修改：90°大角度轨迹控制 ==========
-        self.trajectory_phase = 0  # 阶段划分更细致
-        self.attitude_target_rad = np.pi*2/5  # 目标姿态角度（90度转弧度，核心修改）
-        self.phase_start_time = 0.0  # 各阶段起始时间
-        self.attitude_tolerance = 0.08  # 90°大角度下适度放宽tolerance（弧度）
+        # ========== 交互式控制参数 ==========
+        self.control_mode = 1  # 1:悬停, 2:姿态跟踪, 3:环形轨迹, 4:竖直方形轨迹
+        self.trajectory_start_time = 0.0  # 轨迹起始时间
+        self.trajectory_duration = 20.0  # 轨迹持续时间（秒）
+        self.circle_radius = 1.0  # 环形轨迹半径
+        self.square_size = 2.0  # 方形轨迹边长
 
-        print("倾转旋翼控制器初始化完成（适配90°大角度姿态跟踪，基于四元数姿态控制）")
-        print(f"⚠️  俯仰角超过{self.pitch_threshold_deg}°时将自动置零横滚/偏航力矩 ⚠️")
-    
     def _print_model_diagnostics(self):
         """打印模型诊断信息"""
         print("\n=== 模型诊断信息 ===")
@@ -137,13 +134,13 @@ class HnuterController:
         
         # 创建带时间戳的文件名
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_file = f'logs/drone_log_90deg_quat_{timestamp}.csv'  # 标注四元数日志
-        
-        # 写入CSV表头（新增俯仰角超限标记）
+        self.log_file = f'logs/drone_log_interactive_{timestamp}.csv'
+
+        # 写入CSV表头
         with open(self.log_file, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow([
-                'timestamp', 'pos_x', 'pos_y', 'pos_z', 
+                'timestamp', 'pos_x', 'pos_y', 'pos_z',
                 'target_x', 'target_y', 'target_z',
                 'roll', 'pitch', 'yaw',
                 'target_roll', 'target_pitch', 'target_yaw',
@@ -159,11 +156,11 @@ class HnuterController:
                 'T12', 'T34', 'T5',
                 'alpha1', 'alpha2',
                 'theta1', 'theta2',
-                'trajectory_phase',
-                'is_pitch_exceed'  # 新增：俯仰角超限标记
+                'control_mode',
+                'is_pitch_exceed'
             ])
-        
-        print(f"已创建90°姿态跟踪日志文件(四元数): {self.log_file}")
+
+        print(f"已创建交互式控制日志文件: {self.log_file}")
     
     def log_status(self, state: dict):
         """记录状态到日志文件"""
@@ -174,6 +171,13 @@ class HnuterController:
         acceleration = state.get('acceleration', np.zeros(3))
         euler = state.get('euler', np.zeros(3))
         current_quat = state.get('quaternion', np.array([1.0, 0.0, 0.0, 0.0]))
+
+        # 从目标旋转矩阵提取四元数
+        from scipy.spatial.transform import Rotation as R_scipy
+        target_quat_obj = R_scipy.from_matrix(self.target_rotation_matrix)
+        target_quat = target_quat_obj.as_quat()  # [x, y, z, w]
+        target_euler = target_quat_obj.as_euler('xyz', degrees=False)
+
         is_pitch_exceed = state.get('is_pitch_exceed', False)
         
         with open(self.log_file, 'a', newline='') as csvfile:
@@ -183,9 +187,9 @@ class HnuterController:
                 position[0], position[1], position[2],
                 self.target_position[0], self.target_position[1], self.target_position[2],
                 euler[0], euler[1], euler[2],
-                self.target_attitude[0], self.target_attitude[1], self.target_attitude[2],
+                target_euler[0], target_euler[1], target_euler[2],
                 current_quat[0], current_quat[1], current_quat[2], current_quat[3],
-                self.target_quat[0], self.target_quat[1], self.target_quat[2], self.target_quat[3],
+                target_quat[3], target_quat[0], target_quat[1], target_quat[2],  # [w, x, y, z]
                 velocity[0], velocity[1], velocity[2],
                 angular_velocity[0], angular_velocity[1], angular_velocity[2],
                 acceleration[0], acceleration[1], acceleration[2],
@@ -196,93 +200,85 @@ class HnuterController:
                 self.T12, self.T34, self.T5,
                 self.alpha1, self.alpha2,
                 self.theta1, self.theta2,
-                self.trajectory_phase,
-                int(is_pitch_exceed)  # 记录是否超限（0/1）
+                self.control_mode,
+                int(is_pitch_exceed)
             ])
     
     def _get_actuator_ids(self):
         """获取执行器ID"""
         self.actuator_ids = {}
-        
+
         try:
-            # 机臂偏航执行器
-            self.actuator_ids['arm_pitch_right'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_ACTUATOR, 'tilt_pitch_right')
-            self.actuator_ids['arm_pitch_left'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_ACTUATOR, 'tilt_pitch_left')
-            
-            # 螺旋桨倾转执行器
-            self.actuator_ids['prop_tilt_right'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_ACTUATOR, 'tilt_roll_right')
-            self.actuator_ids['prop_tilt_left'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_ACTUATOR, 'tilt_roll_left')
-            
-            # 推力执行器
+            # 机臂pitch执行器（对应rj2, lj2）
+            self.actuator_ids['arm_pitch_right'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_ACTUATOR, 'tilt_rj2')
+            self.actuator_ids['arm_pitch_left'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_ACTUATOR, 'tilt_lj2')
+
+            # 螺旋桨roll倾转执行器（对应rj1, lj1）
+            self.actuator_ids['prop_tilt_right'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_ACTUATOR, 'tilt_rj1')
+            self.actuator_ids['prop_tilt_left'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_ACTUATOR, 'tilt_lj1')
+
+            # 推力执行器（对应xy1-xy5）
             thrust_actuators = [
-                'motor_r_upper', 'motor_r_lower', 
-                'motor_l_upper', 'motor_l_lower', 
-                'motor_rear_upper'
+                'motor_xy1', 'motor_xy2',  # 右侧共轴双桨
+                'motor_xy3', 'motor_xy4',  # 左侧共轴双桨
+                'motor_xy5'                # 后部单桨
             ]
             for name in thrust_actuators:
                 self.actuator_ids[name] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_ACTUATOR, name)
-            
+
             print("执行器ID映射:", self.actuator_ids)
         except Exception as e:
             print(f"获取执行器ID失败: {e}")
             self.actuator_ids = {
-                'arm_pitch_right': 0,
-                'arm_pitch_left': 1,
-                'prop_tilt_right': 2,
-                'prop_tilt_left': 3,
-                'motor_r_upper': 4,
-                'motor_r_lower': 5,
-                'motor_l_upper': 6,
-                'motor_l_lower': 7,
-                'motor_rear_upper': 8
+                'motor_xy1': 0,
+                'motor_xy2': 1,
+                'motor_xy3': 2,
+                'motor_xy4': 3,
+                'motor_xy5': 4,
+                'arm_pitch_right': 5,  # tilt_rj2
+                'arm_pitch_left': 6,   # tilt_lj2
+                'prop_tilt_right': 7,  # tilt_rj1
+                'prop_tilt_left': 8    # tilt_lj1
             }
             print("使用默认执行器ID映射")
     
     def _get_sensor_ids(self):
         """获取传感器ID"""
         self.sensor_ids = {}
-        
+
         try:
             # 位置和姿态传感器
             self.sensor_ids['drone_pos'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_SENSOR, 'drone_pos')
             self.sensor_ids['drone_quat'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_SENSOR, 'drone_quat')
-            
-            # 速度传感器
-            self.sensor_ids['body_vel'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_SENSOR, 'body_vel')
-            self.sensor_ids['body_gyro'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_SENSOR, 'body_gyro')
-            self.sensor_ids['body_acc'] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_SENSOR, 'body_acc')
-            
-            # 螺旋桨速度传感器
+
+            # 螺旋桨速度传感器（对应xy1-xy5）
             propeller_sensors = [
-                'prop_r_upper_vel', 'prop_r_lower_vel',
-                'prop_l_upper_vel', 'prop_l_lower_vel',
-                'prop_rear_upper_vel'
+                'xy1_vel', 'xy2_vel',
+                'xy3_vel', 'xy4_vel',
+                'xy5_vel'
             ]
             for name in propeller_sensors:
                 self.sensor_ids[name] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_SENSOR, name)
-            
-            # 倾转角度传感器
+
+            # 倾转角度传感器（对应rj1, rj2, lj1, lj2）
             tilt_sensors = [
-                'arm_pitch_right_pos', 'arm_pitch_left_pos',
-                'prop_tilt_right_pos', 'prop_tilt_left_pos'
+                'rj2_pos', 'lj2_pos',
+                'rj1_pos', 'lj1_pos'
             ]
             for name in tilt_sensors:
                 self.sensor_ids[name] = mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_SENSOR, name)
-            
+
             print("传感器ID映射:", self.sensor_ids)
         except Exception as e:
             print(f"获取传感器ID失败: {e}")
             self.sensor_ids = {
                 'drone_pos': 0,
-                'drone_quat': 1,
-                'body_vel': 2,
-                'body_gyro': 3,
-                'body_acc': 4
+                'drone_quat': 1
             }
             print("使用默认传感器ID映射")
     
     def get_state(self) -> dict:
-        """获取无人机当前状态（新增俯仰角超限判断）"""
+        """获取无人机当前状态"""
         state = {
             'position': np.zeros(3),
             'quaternion': np.array([1.0, 0.0, 0.0, 0.0]),
@@ -291,7 +287,7 @@ class HnuterController:
             'angular_velocity': np.zeros(3),
             'acceleration': np.zeros(3),
             'euler': np.zeros(3),
-            'is_pitch_exceed': False  # 新增：俯仰角超限标记
+            'is_pitch_exceed': False 
         }
         
         try:
@@ -305,20 +301,6 @@ class HnuterController:
             state['rotation_matrix'] = self._quat_to_rotation_matrix(state['quaternion'])
             state['euler'] = self._quat_to_euler(state['quaternion'])
             
-            # ========== 核心修改：判断俯仰角是否超限 ==========
-            self.is_pitch_exceed = abs(state['euler'][1]) > self.pitch_threshold_rad
-            state['is_pitch_exceed'] = self.is_pitch_exceed
-            
-            # 打印超限警告（仅首次超限/恢复时）
-            if self.is_pitch_exceed and not self._pitch_warned:
-                pitch_deg = np.degrees(state['euler'][1])
-                print(f"\n⚠️ 警告：俯仰角 {pitch_deg:.1f}° 超过 {self.pitch_threshold_deg}°，已置零横滚/偏航力矩！")
-                self._pitch_warned = True
-            elif not self.is_pitch_exceed and self._pitch_warned:
-                pitch_deg = np.degrees(state['euler'][1])
-                print(f"\n✅ 恢复：俯仰角 {pitch_deg:.1f}° 低于 {self.pitch_threshold_deg}°，恢复横滚/偏航力矩控制！")
-                self._pitch_warned = False
-            
             if np.any(np.isnan(state['position'])):
                 print("警告: 位置数据包含NaN，使用零值")
                 state['position'] = np.zeros(3)
@@ -327,31 +309,6 @@ class HnuterController:
         except Exception as e:
             print(f"状态获取错误: {e}")
             return state
-
-    def _quat_multiply(self, q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
-        """
-        核心新增：四元数乘法（q1 * q2）
-        输入：q1, q2 - 四元数 [w, x, y, z]
-        输出：q_out - 乘积四元数 [w, x, y, z]
-        """
-        w1, x1, y1, z1 = q1
-        w2, x2, y2, z2 = q2
-
-        w = w1*w2 - x1*x2 - y1*y2 - z1*z2
-        x = w1*x2 + x1*w2 + y1*z2 - z1*y2
-        y = w1*y2 - x1*z2 + y1*w2 + z1*x2
-        z = w1*z2 + x1*y2 - y1*x2 + z1*w2
-
-        return np.array([w, x, y, z])
-    
-    def _quat_conjugate(self, q: np.ndarray) -> np.ndarray:
-        """
-        核心新增：四元数共轭（单位四元数的逆等于共轭）
-        输入：q - 四元数 [w, x, y, z]
-        输出：q_conj - 共轭四元数 [w, -x, -y, -z]
-        """
-        q_conj = np.array([q[0], -q[1], -q[2], -q[3]])
-        return q_conj
 
     def _quat_to_rotation_matrix(self, quat: np.ndarray) -> np.ndarray:
         """四元数转旋转矩阵"""
@@ -429,54 +386,42 @@ class HnuterController:
         ])
 
     def compute_control_wrench(self, state: dict) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        核心修改：基于四元数的姿态控制器（替换原欧拉角/旋转矩阵误差计算）
-        计算控制力矩和力（基于几何控制器）
-        """
+        """计算控制力矩和力（基于几何控制器，使用旋转矩阵）"""
         position = state['position']
         velocity = state['velocity']
-        q = state['quaternion']  # 当前四元数 [w, x, y, z]
-        R = state['rotation_matrix']
-        angular_velocity = state['angular_velocity']
-        q_d = self.target_quat  # 目标四元数 [w, x, y, z]
 
         # 位置误差和速度误差
         pos_error = self.target_position - position
         vel_error = self.target_velocity - velocity
-        
+
         # 期望加速度（PD控制）
         acc_des = self.target_acceleration + self.Kp @ pos_error + self.Dp @ vel_error
-        
+
         # 世界坐标系下的控制力
         f_c_world = self.mass * (acc_des + np.array([0, 0, self.gravity]))
-        
-        # ========== 核心修改：四元数姿态误差计算（无万向锁） ==========
-        # 计算误差四元数 q_e = q_d * q^{-1}（q^{-1}为q的共轭，因q是单位四元数）
-        q_conj = self._quat_conjugate(q)
-        q_e = self._quat_multiply(q_d, q_conj)
-        
-        # 提取姿态误差向量 e_R（四元数虚部的2倍，适用于大角度姿态跟踪）
-        e_R = 2 * q_e[1:]  # q_e = [w_e, x_e, y_e, z_e], 误差向量为 [x_e, y_e, z_e] * 2
-        
-        # 角速度误差计算（保持与原逻辑兼容，也可基于四元数优化）
-        R_des = self._quat_to_rotation_matrix(q_d)
+
+        # 姿态误差计算（使用旋转矩阵）
+        R = state['rotation_matrix']
+        angular_velocity = state['angular_velocity']
+        R_des = self.target_rotation_matrix
+        e_R = 0.5 * self.vee_map(R_des.T @ R - R.T @ R_des)
         omega_error = angular_velocity - R.T @ R_des @ self.target_attitude_rate
-        
-        # 控制力矩（PD控制，基于四元数姿态误差）
+
+        # 控制力矩
         tau_c = -self.KR * e_R - self.Domega * omega_error
 
         # 转换到机体坐标系
         f_c_body = R.T @ f_c_world
-        
+
         # 更新类成员变量
         self.f_c_body = f_c_body
         self.f_c_world = f_c_world
         self.tau_c = tau_c
-        
+
         return f_c_body, tau_c
     
     def _euler_to_rotation_matrix(self, euler: np.ndarray) -> np.ndarray:
-        """将欧拉角转换为旋转矩阵（RPY顺序，用于兼容原有逻辑）"""
+        """将欧拉角转换为旋转矩阵（RPY顺序）"""
         roll, pitch, yaw = euler
         
         R_x = np.array([
@@ -501,6 +446,7 @@ class HnuterController:
 
     def inverse_nonlinear_mapping(self, W, state):
         """修正后的代数逆映射函数（适配90°大角度）"""
+        # W 0 fx 1 fy 2 fz 3 tx 4 ty 5 tz
         # 尾部推力 (由俯仰力矩确定)
         u7 = (2/1) * W[4]                     
         
@@ -565,11 +511,11 @@ class HnuterController:
         theta1 = uu[5]  # pitch左倾角
         theta2 = uu[6]  # pitch右倾角
         
-        # 推力限制（90°大角度下适度提高上限）
-        T_max = 60
+        # 推力限制（每个螺旋桨最大24.5N，4个前螺旋桨共98N）
+        T_max = 80  # 单侧共轴双桨最大推力（略低于理论值以留余量）
         F1 = np.clip(F1, 0, T_max)
         F2 = np.clip(F2, 0, T_max)
-        F3 = np.clip(F3, -15, 15)
+        F3 = np.clip(F3, -20, 20)  # 后部单桨
         
         # 角度限制（90°大角度，匹配目标）
         alpha_max = np.radians(200)  # 略大于90°，留有余量
@@ -609,38 +555,40 @@ class HnuterController:
     
     def set_actuators(self, T12: float, T34: float, T5: float, alpha1: float, alpha2: float, theta1: float, theta2: float):
         """应用控制命令到执行器"""
-        try:            
-            # 设置机臂偏航角度 (alpha)
+        try:
+            # 设置机臂pitch角度 (对应rj2, lj2)
             if 'arm_pitch_right' in self.actuator_ids:
                 self.data.ctrl[self.actuator_ids['arm_pitch_right']] = alpha2
-            
+
             if 'arm_pitch_left' in self.actuator_ids:
                 self.data.ctrl[self.actuator_ids['arm_pitch_left']] = alpha1
-            
-            # 设置螺旋桨倾转角度 (theta)
+
+            # 设置螺旋桨roll倾转角度 (对应rj1, lj1)
             if 'prop_tilt_right' in self.actuator_ids:
-                self.data.ctrl[self.actuator_ids['prop_tilt_right']] = theta1
-            
+                self.data.ctrl[self.actuator_ids['prop_tilt_right']] = theta2
+
             if 'prop_tilt_left' in self.actuator_ids:
-                self.data.ctrl[self.actuator_ids['prop_tilt_left']] = theta2
-            
-            # 设置推力（左右旋翼组均分推力）
-            if 'motor_r_upper' in self.actuator_ids:
-                self.data.ctrl[self.actuator_ids['motor_r_upper']] = T34 / 2
-            
-            if 'motor_r_lower' in self.actuator_ids:
-                self.data.ctrl[self.actuator_ids['motor_r_lower']] = T34 / 2
-            
-            if 'motor_l_upper' in self.actuator_ids:
-                self.data.ctrl[self.actuator_ids['motor_l_upper']] = T12 / 2
-            
-            if 'motor_l_lower' in self.actuator_ids:
-                self.data.ctrl[self.actuator_ids['motor_l_lower']] = T12 / 2
-            
-            # 尾部推进器
-            if 'motor_rear_upper' in self.actuator_ids:
-                self.data.ctrl[self.actuator_ids['motor_rear_upper']] = T5
-                
+                self.data.ctrl[self.actuator_ids['prop_tilt_left']] = theta1
+
+            # 设置推力（共轴双桨均分推力）
+            # 右侧共轴双桨 (xy1, xy2)
+            if 'motor_xy1' in self.actuator_ids:
+                self.data.ctrl[self.actuator_ids['motor_xy1']] = T34 / 2
+
+            if 'motor_xy2' in self.actuator_ids:
+                self.data.ctrl[self.actuator_ids['motor_xy2']] = T34 / 2
+
+            # 左侧共轴双桨 (xy3, xy4)
+            if 'motor_xy3' in self.actuator_ids:
+                self.data.ctrl[self.actuator_ids['motor_xy3']] = T12 / 2
+
+            if 'motor_xy4' in self.actuator_ids:
+                self.data.ctrl[self.actuator_ids['motor_xy4']] = T12 / 2
+
+            # 后部单桨 (xy5)
+            if 'motor_xy5' in self.actuator_ids:
+                self.data.ctrl[self.actuator_ids['motor_xy5']] = T5
+
         except Exception as e:
             print(f"设置执行器失败: {e}")
     
@@ -668,217 +616,274 @@ class HnuterController:
             return False
     
     def print_status(self):
-        """打印当前状态信息（含90°大角度标注+俯仰角超限提示）"""
+        """打印当前状态信息"""
         try:
             state = self.get_state()
             pos = state['position']
             vel = state['velocity']
             accel = state['acceleration']
             euler_deg = np.degrees(state['euler'])
-            target_euler_deg = np.degrees(self.target_attitude)
-            current_quat = state['quaternion']
-            target_quat = self.target_quat  # 直接使用目标四元数
-            
-            # 阶段名称映射（更新为90°标注）
-            phase_names = {
-                0: "起飞悬停",
-                1: "Roll转动(0°→90°)",
-                2: "Roll保持(90°，稳定5s)",
-                3: "Roll恢复(90°→0°)",
-                4: "Pitch转动(0°→90°)",
-                5: "Pitch保持(90°，稳定5s)",
-                6: "Pitch恢复(90°→0°)",
-                7: "Yaw转动(0°→90°)",
-                8: "Yaw保持(90°，稳定5s)",
-                9: "Yaw恢复(90°→0°)",
-                10: "最终悬停"
+
+            # 从目标旋转矩阵提取欧拉角用于显示
+            from scipy.spatial.transform import Rotation as R_scipy
+            target_euler = R_scipy.from_matrix(self.target_rotation_matrix).as_euler('xyz', degrees=True)
+
+            # 控制模式名称
+            mode_names = {
+                1: "悬停",
+                2: "姿态跟踪",
+                3: "环形轨迹",
+                4: "竖直方形轨迹"
             }
-            phase_name = phase_names.get(self.trajectory_phase, "未知阶段")
-            
-            print(f"\n=== 轨迹阶段: {self.trajectory_phase} ({phase_name}) ===")
-            print(f"位置: X={pos[0]:.8f}m, Y={pos[1]:.8f}m, Z={pos[2]:.8f}m")
-            print(f"目标位置: X={self.target_position[0]:.8f}m, Y={self.target_position[1]:.8f}m, Z={self.target_position[2]:.8f}m")
-            print(f"姿态: Roll={euler_deg[0]:.2f}°, Pitch={euler_deg[1]:.2f}°, Yaw={euler_deg[2]:.2f}°")  
+            mode_name = mode_names.get(self.control_mode, "未知模式")
+
+            print(f"\n=== 控制模式: {mode_name} ===")
+            print(f"位置: X={pos[0]:.4f}m, Y={pos[1]:.4f}m, Z={pos[2]:.4f}m")
+            print(f"目标位置: X={self.target_position[0]:.4f}m, Y={self.target_position[1]:.4f}m, Z={self.target_position[2]:.4f}m")
+            print(f"姿态: Roll={euler_deg[0]:.2f}°, Pitch={euler_deg[1]:.2f}°, Yaw={euler_deg[2]:.2f}°")
+            print(f"目标姿态: Roll={target_euler[0]:.2f}°, Pitch={target_euler[1]:.2f}°, Yaw={target_euler[2]:.2f}°")
             print(f"控制力矩: X={self.tau_c[0]:.4f}Nm, Y={self.tau_c[1]:.4f}Nm, Z={self.tau_c[2]:.4f}Nm")
-            print(f"目标姿态: Roll={target_euler_deg[0]:.1f}°, Pitch={target_euler_deg[1]:.1f}°, Yaw={target_euler_deg[2]:.1f}°") 
-            print(f"当前四元数: [w={current_quat[0]:.4f}, x={current_quat[1]:.4f}, y={current_quat[2]:.4f}, z={current_quat[3]:.4f}]")
-            print(f"目标四元数: [w={target_quat[0]:.4f}, x={target_quat[1]:.4f}, y={target_quat[2]:.4f}, z={target_quat[3]:.4f}]")
-            print(f"角速度: Roll={np.degrees(state['angular_velocity'][0]):.2f}°/s, Pitch={np.degrees(state['angular_velocity'][1]):.2f}°/s, Yaw={np.degrees(state['angular_velocity'][2]):.2f}°/s")
-            print(f"执行器状态: T12={self.T12:.2f}N, T34={self.T34:.2f}N, T5={self.T5:.2f}N, α1={math.degrees(self.alpha1):.2f}°, α2={math.degrees(self.alpha2):.2f}°, θ1={math.degrees(self.theta1):.2f}°, θ2={math.degrees(self.theta2):.2f}°")
-            # ========== 新增：打印俯仰角超限状态 ==========
-            print(f"俯仰角限制: {'超限(横滚/偏航力矩已置零)' if self.is_pitch_exceed else '正常'} (阈值: {self.pitch_threshold_deg}°)")
+            print(f"执行器: T12={self.T12:.2f}N, T34={self.T34:.2f}N, T5={self.T5:.2f}N")
+            print(f"倾转角: α1={math.degrees(self.alpha1):.2f}°, α2={math.degrees(self.alpha2):.2f}°, θ1={math.degrees(self.theta1):.2f}°, θ2={math.degrees(self.theta2):.2f}°")
             print("--------------------------------------------------")
         except Exception as e:
             print(f"状态打印失败: {e}")
     
     def update_trajectory(self, current_time: float):
         """
-        适配90°大角度的轨迹发布器（延长时间确保稳定）
-        同步更新目标欧拉角和目标四元数
+        交互式轨迹更新
+        根据control_mode更新目标位置和姿态
         """
-        # 初始化阶段起始时间
-        if self.trajectory_phase == 0 and self.phase_start_time == 0.0:
-            self.phase_start_time = current_time
-        
-        # 阶段时长配置（90°大角度专属）
-        phase_durations = {
-            0: 6.0,    # 起飞悬停（延长到6秒，确保高度稳定）
-            1: 12.0,   # Roll转动（12秒，90°大角度缓慢变化）
-            2: 5.0,    # Roll保持（5秒，稳定90°姿态）
-            3: 6.0,    # Roll恢复（6秒，平稳回零）
-            4: 12.0,   # Pitch转动（12秒）
-            5: 5.0,    # Pitch保持（5秒）
-            6: 6.0,    # Pitch恢复（6秒）
-            7: 12.0,   # Yaw转动（12秒）
-            8: 5.0,    # Yaw保持（5秒）
-            9: 6.0,    # Yaw恢复（6秒）
-            10: float('inf')  # 最终悬停
-        }
-        
-        # 计算当前阶段已运行时间
-        phase_elapsed = current_time - self.phase_start_time
-        
-        # 阶段切换判断
-        if phase_elapsed > phase_durations[self.trajectory_phase]:
-            self.trajectory_phase += 1
-            self.phase_start_time = current_time  # 重置阶段起始时间
-            print(f"\n🔄 轨迹阶段切换: {self.trajectory_phase-1} → {self.trajectory_phase}")
-        
-        # 各阶段轨迹逻辑（所有阶段保持高度2m，只变化姿态）
-        if self.trajectory_phase == 0:
-            # 阶段0：起飞悬停（高度稳定在2m，姿态归零）
+        if self.control_mode == 1:
+            # 模式1：悬停
             self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([0.0, 0.0, 0.0])
-        elif self.trajectory_phase == 1:
-            # 阶段1：Roll缓慢转动（0°→90°，线性插值）
-            progress = phase_elapsed / phase_durations[1]  # 0~1
-            progress = np.clip(progress, 0.0, 1.0)
-            roll_target = progress * self.attitude_target_rad
+            self.target_rotation_matrix = np.eye(3)
+            self.target_velocity = np.zeros(3)
+            self.target_acceleration = np.zeros(3)
+
+        elif self.control_mode == 2:
+            # 模式2：姿态跟踪（保持当前设置的target_rotation_matrix）
             self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([roll_target, 0.0, 0.0])
-        elif self.trajectory_phase == 2:
-            # 阶段2：Roll保持（稳定在90°）
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([self.attitude_target_rad, 0.0, 0.0])
-        elif self.trajectory_phase == 3:
-            # 阶段3：Roll恢复（90°→0°，线性插值）
-            progress = phase_elapsed / phase_durations[3]  # 0~1
-            progress = np.clip(progress, 0.0, 1.0)
-            roll_target = (1 - progress) * self.attitude_target_rad
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([roll_target, 0.0, 0.0])
-        elif self.trajectory_phase == 4:
-            # 阶段4：Pitch缓慢转动（0°→90°）
-            progress = phase_elapsed / phase_durations[4]  # 0~1
-            progress = np.clip(progress, 0.0, 1.0)
-            pitch_target = progress * self.attitude_target_rad
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([0.0, pitch_target, 0.0])
-        elif self.trajectory_phase == 5:
-            # 阶段5：Pitch保持（稳定在90°）
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([0.0, self.attitude_target_rad, 0.0])
-        elif self.trajectory_phase == 6:
-            # 阶段6：Pitch恢复（90°→0°）
-            progress = phase_elapsed / phase_durations[6]  # 0~1
-            progress = np.clip(progress, 0.0, 1.0)
-            pitch_target = (1 - progress) * self.attitude_target_rad
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([0.0, pitch_target, 0.0])
-        elif self.trajectory_phase == 7:
-            # 阶段7：Yaw缓慢转动（0°→90°）
-            progress = phase_elapsed / phase_durations[7]  # 0~1
-            progress = np.clip(progress, 0.0, 1.0)
-            yaw_target = progress * self.attitude_target_rad
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([0.0, 0.0, yaw_target])
-        elif self.trajectory_phase == 8:
-            # 阶段8：Yaw保持（稳定在90°）
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([0.0, 0.0, self.attitude_target_rad])
-        elif self.trajectory_phase == 9:
-            # 阶段9：Yaw恢复（90°→0°）
-            progress = phase_elapsed / phase_durations[9]  # 0~1
-            progress = np.clip(progress, 0.0, 1.0)
-            yaw_target = (1 - progress) * self.attitude_target_rad
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([0.0, 0.0, yaw_target])
-        else:
-            # 阶段10：最终悬停（姿态归零，高度稳定）
-            self.target_position = np.array([0.0, 0.0, 2.0])
-            self.target_attitude = np.array([0.0, 0.0, 0.0])
-        
-        # 核心新增：同步更新目标四元数（从目标欧拉角转换）
-        self.target_quat = self._euler_to_quaternion(self.target_attitude)
-        
-        # 速度/加速度归零（悬停状态，避免位置漂移）
-        self.target_velocity = np.zeros(3)
-        self.target_acceleration = np.zeros(3)
+            self.target_velocity = np.zeros(3)
+            self.target_acceleration = np.zeros(3)
+
+        elif self.control_mode == 3:
+            # 模式3：环形轨迹
+            t = current_time - self.trajectory_start_time
+            omega = 2 * np.pi / self.trajectory_duration  # 角频率
+
+            # 水平圆形轨迹
+            x = self.circle_radius * np.cos(omega * t)
+            y = self.circle_radius * np.sin(omega * t)
+            z = 2.0
+
+            # 速度
+            vx = -self.circle_radius * omega * np.sin(omega * t)
+            vy = self.circle_radius * omega * np.cos(omega * t)
+            vz = 0.0
+
+            # 加速度
+            ax = -self.circle_radius * omega**2 * np.cos(omega * t)
+            ay = -self.circle_radius * omega**2 * np.sin(omega * t)
+            az = 0.0
+
+            self.target_position = np.array([x, y, z])
+            self.target_velocity = np.array([vx, vy, vz])
+            self.target_acceleration = np.array([ax, ay, az])
+
+            # 姿态：偏航角跟随运动方向
+            yaw = omega * t + np.pi / 2
+            self.target_rotation_matrix = self._euler_to_rotation_matrix(np.array([0.0, 0.0, yaw]))
+
+        elif self.control_mode == 4:
+            # 模式4：竖直方形轨迹
+            t = current_time - self.trajectory_start_time
+            period = self.trajectory_duration
+            segment_time = period / 4  # 每条边的时间
+
+            # 确定当前在哪条边
+            t_mod = t % period
+            segment = int(t_mod / segment_time)
+            t_seg = t_mod - segment * segment_time
+            progress = t_seg / segment_time
+
+            half_size = self.square_size / 2
+
+            if segment == 0:
+                # 边1：从下到上 (x=0, z: 1.0→3.0)
+                x, y = 0.0, 0.0
+                z = 1.0 + progress * 2.0
+                vx, vy = 0.0, 0.0
+                vz = 2.0 / segment_time
+                ax, ay, az = 0.0, 0.0, 0.0
+            elif segment == 1:
+                # 边2：从左到右 (x: 0→2, z=3.0)
+                x = progress * 2.0
+                y, z = 0.0, 3.0
+                vx = 2.0 / segment_time
+                vy, vz = 0.0, 0.0
+                ax, ay, az = 0.0, 0.0, 0.0
+            elif segment == 2:
+                # 边3：从上到下 (x=2, z: 3.0→1.0)
+                x, y = 2.0, 0.0
+                z = 3.0 - progress * 2.0
+                vx, vy = 0.0, 0.0
+                vz = -2.0 / segment_time
+                ax, ay, az = 0.0, 0.0, 0.0
+            else:
+                # 边4：从右到左 (x: 2→0, z=1.0)
+                x = 2.0 - progress * 2.0
+                y, z = 0.0, 1.0
+                vx = -2.0 / segment_time
+                vy, vz = 0.0, 0.0
+                ax, ay, az = 0.0, 0.0, 0.0
+
+            self.target_position = np.array([x, y, z])
+            self.target_velocity = np.array([vx, vy, vz])
+            self.target_acceleration = np.array([ax, ay, az])
+            self.target_rotation_matrix = np.eye(3)
+
         self.target_attitude_rate = np.zeros(3)
         self.target_attitude_acceleration = np.zeros(3)
+
+    def set_attitude_target(self, axis: str, angle_deg: float):
+        """
+        设置姿态目标（用于模式2）
+        axis: 'roll', 'pitch', 或 'yaw'
+        angle_deg: 目标角度（度）
+        """
+        angle_rad = np.radians(angle_deg)
+
+        if axis.lower() == 'roll':
+            euler = np.array([angle_rad, 0.0, 0.0])
+        elif axis.lower() == 'pitch':
+            euler = np.array([0.0, angle_rad, 0.0])
+        elif axis.lower() == 'yaw':
+            euler = np.array([0.0, 0.0, angle_rad])
+        else:
+            print(f"未知轴: {axis}")
+            return
+
+        self.target_rotation_matrix = self._euler_to_rotation_matrix(euler)
+        print(f"姿态目标已设置: {axis} = {angle_deg}°")
     
 
 def main():
-    """主函数 - 启动90°大角度姿态跟踪仿真（基于四元数控制）"""
-    print("=== 倾转旋翼无人机90°大角度姿态跟踪仿真（四元数姿态控制器） ===")
-    print("核心优化：基于四元数控制，无万向锁问题，适配90°大角度姿态跟踪")
-    print("安全限制：俯仰角超过70°时自动置零横滚/偏航力矩")
-    print("轨迹逻辑：起飞悬停→Roll90°(保持5s)→恢复→Pitch90°(保持5s)→恢复→Yaw90°(保持5s)→恢复→悬停")
-    
+    """主函数 - 交互式控制"""
+    print("=== 倾转旋翼无人机交互式控制仿真 ===")
+    print("控制模式：")
+    print("  1 - 悬停")
+    print("  2 - 姿态跟踪")
+    print("  3 - 环形轨迹")
+    print("  4 - 竖直方形轨迹")
+    print("  q - 退出")
+
     try:
         # 初始化控制器
-        controller = HnuterController("hnuter201.xml")
-        
-        # 初始目标（会被update_trajectory覆盖）
+        controller = HnuterController("hnuter206.xml")
+
+        # 初始目标
         controller.target_position = np.array([0.0, 0.0, 2.0])
-        controller.target_attitude = np.array([0.0, 0.0, 0.0])
-        controller.target_quat = controller._euler_to_quaternion(controller.target_attitude)
-        
+        controller.target_rotation_matrix = np.eye(3)
+
         # 启动 Viewer
         with viewer.launch_passive(controller.model, controller.data) as v:
             print("\n仿真启动：")
-            print(f"90°姿态跟踪日志文件路径: {controller.log_file}")
-            print("按 Ctrl+C 终止仿真")
-            
+            print(f"日志文件路径: {controller.log_file}")
+            print("按数字键切换模式，按 q 退出")
+
             start_time = time.time()
             last_print_time = 0
-            print_interval = 1.0  # 90°大角度下延长打印间隔，便于观察
+            print_interval = 1.0
             count = 0
-            
+
+            # 非阻塞输入设置
+            import sys
+            import select
+            import termios
+            import tty
+
+            # 保存终端设置
+            old_settings = termios.tcgetattr(sys.stdin)
+
             try:
+                # 设置为非阻塞模式
+                tty.setcbreak(sys.stdin.fileno())
+
                 while v.is_running():
                     current_time = time.time() - start_time
-                    
-                    # 启用轨迹更新（核心）
+
+                    # 检查用户输入（非阻塞）
+                    if select.select([sys.stdin], [], [], 0)[0]:
+                        key = sys.stdin.read(1)
+
+                        if key == 'q':
+                            print("\n退出仿真...")
+                            break
+                        elif key == '1':
+                            controller.control_mode = 1
+                            print("\n切换到模式1: 悬停")
+                        elif key == '2':
+                            controller.control_mode = 2
+                            print("\n切换到模式2: 姿态跟踪")
+                            print("请输入轴 (roll/pitch/yaw): ", end='', flush=True)
+
+                            # 恢复终端设置以读取输入
+                            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+                            axis = input().strip()
+
+                            print("请输入角度 (度): ", end='', flush=True)
+                            try:
+                                angle = float(input().strip())
+                                controller.set_attitude_target(axis, angle)
+                                controller.trajectory_start_time = current_time
+                            except ValueError:
+                                print("无效的角度输入")
+
+                            # 重新设置为非阻塞模式
+                            tty.setcbreak(sys.stdin.fileno())
+
+                        elif key == '3':
+                            controller.control_mode = 3
+                            controller.trajectory_start_time = current_time
+                            print("\n切换到模式3: 环形轨迹")
+                        elif key == '4':
+                            controller.control_mode = 4
+                            controller.trajectory_start_time = current_time
+                            print("\n切换到模式4: 竖直方形轨迹")
+
+                    # 更新轨迹
                     controller.update_trajectory(current_time)
-                    
+
                     # 更新控制
                     controller.update_control()
 
                     count += 1
                     if count % 1 == 0:
-                        # 仿真步进（保持与模型步长一致）
+                        # 仿真步进
                         mj.mj_step(controller.model, controller.data)
-                    
+
                     # 同步可视化
                     v.sync()
-                    
+
                     # 定期打印状态
                     if current_time - last_print_time > print_interval:
                         controller.print_status()
                         last_print_time = current_time
 
-                    # 控制仿真速率（避免过快）
+                    # 控制仿真速率
                     time.sleep(0.001)
 
             except KeyboardInterrupt:
                 print("\n仿真被用户中断")
-            
+            finally:
+                # 恢复终端设置
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+
             print("仿真结束")
             final_state = controller.get_state()
             print(f"最终位置: ({final_state['position'][0]:.2f}, {final_state['position'][1]:.2f}, {final_state['position'][2]:.2f})m")
             print(f"最终姿态: Roll={np.degrees(final_state['euler'][0]):.2f}°, Pitch={np.degrees(final_state['euler'][1]):.2f}°, Yaw={np.degrees(final_state['euler'][2]):.2f}°")
-            print(f"最终四元数: [w={final_state['quaternion'][0]:.4f}, x={final_state['quaternion'][1]:.4f}, y={final_state['quaternion'][2]:.4f}, z={final_state['quaternion'][3]:.4f}]")
 
     except Exception as e:
         print(f"仿真主循环失败: {e}")

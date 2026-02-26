@@ -1,0 +1,5 @@
+- 默认轨迹：python3 main.py
+- 平滑李萨如曲线：python3 main.py -t lissajous
+- 螺旋上升轨迹：python3 main.py -t spiral
+- 环形上升轨迹：python3 main.py -t ring
+
