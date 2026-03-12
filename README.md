@@ -253,7 +253,7 @@ xdg-open results/*_results.png
 
 ## 👨‍💻 作者
 
-**Hunter**
+**Arcticg**
 - 日期: 2026-03
 - 版本: 1.0
 
@@ -262,15 +262,6 @@ xdg-open results/*_results.png
 ## 📄 许可证
 
 本项目仅供学习和研究使用。
-
----
-
-## 🔗 相关文件
-
-- `diagnose_log.py` - 日志分析工具
-- `test_yaw_fix.py` - 偏航角测试工具
-- `hnuter94.py` - 圆周轨迹测试
-- `hnuter92.py` - 多场景轨迹测试
 
 ---
 
