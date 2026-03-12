@@ -245,8 +245,8 @@ xdg-open results/*_results.png
 
 ## 📖 参考文献
 
-- Lee, T. (2010). Geometric tracking control of a quadrotor UAV on SE(3)
-- Mellinger, D. (2012). Minimum snap trajectory generation
+- ***
+- ***
 - 倾转旋翼无人机控制分配算法
 
 ---
